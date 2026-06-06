@@ -1,0 +1,18 @@
+Timestamp,Email ID,From,Subject,Category,Priority,Sentiment,Action Required,Summary,Key Info,Draft Reply,Status,Confidence
+2026-06-06T12:09:57.505805,10,Google <no-reply@accounts.google.com>,Security alert,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:10:00.569059,11,Google Developer Program <googledev-noreply@google.com>,The Monthly Build - Google Developer Program - June 2026,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:10:03.748440,12,"""ASUS India""<noreply@nedm.asus.com>",Vibe Check: Passed ✅,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:10:06.698232,13,Google <no-reply@accounts.google.com>,Security alert,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:10:09.766114,14,Google <no-reply@accounts.google.com>,2-Step Verification turned on,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:10:12.617558,15,Google <no-reply@accounts.google.com>,Security alert,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:10:15.605279,16,Kushal Singh Tomar <kushaltomar500@gmail.com>,Test Email,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:18:21.954009,17,Kushal Singh Tomar <kushaltomar500@gmail.com>,Test from recruiter,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:23:26.561069,18,Kushal Singh Tomar <kushaltomar500@gmail.com>,Testing the Email Generator,other,low,neutral,False,Could not analyze — will retry next cycle.,,,pending,0.0
+2026-06-06T12:28:22.005090,19,Kushal Singh Tomar <kushaltomar500@gmail.com>,What's up?,other,low,neutral,False,Could not analyze,,,pending,0.0
+2026-06-06T12:32:02.044714,20,Kushal Singh Tomar <kushaltomar500@gmail.com>,Off Campus,other,low,neutral,False,Could not analyze — will retry next cycle.,,,pending,0.0
+2026-06-06T15:40:38.744597,21,Letterboxd <robot@letterboxd.com>,Letterboxd Rushes for Ayush,other,low,neutral,False,Could not analyze — will retry next cycle.,,,pending,0.0
+2026-06-06T15:52:47.150561,22,Kushal Singh Tomar <kushaltomar500@gmail.com>,Uttkarsh Gupta,other,low,neutral,False,Could not analyze — will retry next cycle.,,,pending,0.0
+2026-06-06T15:55:32.826807,18,Kushal Singh Tomar <kushaltomar500@gmail.com>,Testing the Email Generator,other,low,neutral,False,Could not analyze — will retry next cycle.,,,pending,0.0
+2026-06-06T15:56:04.679374,19,Kushal Singh Tomar <kushaltomar500@gmail.com>,What's up?,other,low,neutral,False,Could not analyze — will retry next cycle.,,,pending,0.0
+2026-06-06T15:58:19.732179,8,GATE 2026 <noreply-gate2026@iitg.ac.in>,GATE 2026 Update,other,low,neutral,False,"The email is an update from GATE 2026, but the body is empty, providing no further information.","GATE 2026, 29 Oct 2025",,pending,0.8
+2026-06-06T15:59:20.930485,17,Kushal Singh Tomar <kushaltomar500@gmail.com>,Test from recruiter,lead,high,positive,True,A recruiter is reaching out to discuss an AI Developer opportunity at their startup. They came across Ayush's profile and are interested in discussing the position.,"Kushal Singh Tomar, AI Developer opportunity","Dear Kushal, thank you for reaching out. I'd be happy to discuss the AI Developer opportunity at your startup. Could you please provide more details about the position and what you're looking for in a candidate? Best regards, Ayush Singh Tomar",pending,0.9
