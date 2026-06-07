@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 
-const API = "http://localhost:8000";
-
+const API = "https://kus-hal-email-agent.hf.space";
 const CATEGORY_ICONS = {
   lead: "↗",
   client: "◈",
