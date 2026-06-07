@@ -21,7 +21,7 @@ app = FastAPI(title="Email Agent API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -116,7 +116,22 @@ def get_stats():
 
     return stats
 
-
+@app.get("/debug")
+def debug():
+    try:
+        import imaplib
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(os.environ.get("GMAIL_ADDRESS", "NOT SET"),
+                   os.environ.get("GMAIL_APP_PASS", "NOT SET"))
+        mail.select("inbox")
+        _, data = mail.search(None, "UNSEEN")
+        count = len(data[0].split())
+        mail.logout()
+        return {"status": "ok", "unread_count": count,
+                "gmail": os.environ.get("GMAIL_ADDRESS", "NOT SET")}
+    except Exception as e:
+        return {"status": "error", "error": str(e),
+                "gmail": os.environ.get("GMAIL_ADDRESS", "NOT SET")}
 @app.get("/health")
 def health():
     return {"status": "ok", "poll_interval_minutes": POLL_INTERVAL_MINUTES}
