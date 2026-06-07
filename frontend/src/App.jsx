@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 
-const API = "https://kus-hal-email-agent.hf.space";
+const API = "https://onlooker-reunite-spiny.ngrok-free.dev";
 const CATEGORY_ICONS = {
   lead: "↗",
   client: "◈",
