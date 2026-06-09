@@ -2,6 +2,8 @@
 
 An AI-powered email agent that reads your Gmail, categorizes emails, drafts professional replies using LLaMA 3.3, and lets you approve or reject them from a clean dashboard — all without touching Google Cloud.
 
+🔗 **Live Demo:** https://email-agent-xi-drab.vercel.app
+
 ---
 
 ## 🚀 What It Does
@@ -9,6 +11,7 @@ An AI-powered email agent that reads your Gmail, categorizes emails, drafts prof
 - **Reads** unread emails from Gmail via IMAP
 - **Analyzes** each email using Groq (LLaMA 3.3 70B) — category, priority, sentiment, summary
 - **Drafts** a professional reply signed with your name
+- **Composes** personalized cold emails with one click using LLaMA 3.3
 - **Logs** everything to a local CSV file
 - **Dashboard** to review, edit, approve, or reject drafts before sending
 - **Auto-runs** every 5 minutes in the background
@@ -154,13 +157,17 @@ Gmail Inbox (IMAP)
 **"How does the backend work?"**
 > FastAPI serves 6 REST endpoints. An APScheduler job runs `run_agent_cycle()` every 5 minutes automatically. Emails are stored in an in-memory dict keyed by IMAP UID, and logged to CSV for persistence across dashboard reloads.
 
+**"What is the cold email composer?"**
+> It's a built-in feature where you enter a recipient's name, company, and target role — LLaMA 3.3 generates a personalized 80-word cold email instantly. This is literally the tool I use to send outreach emails to recruiters.
+
 ---
 
 ## 📌 Roadmap
 
-- [ ] Deploy backend to Render
-- [ ] Deploy frontend to Vercel
-- [ ] Add email threading (reply-to-reply)
+- [x] Deploy frontend to Vercel
+- [x] Cold email composer with LLaMA 3.3
+- [ ] Persistent storage with SQLite
+- [ ] Email threading (reply-to-reply)
 - [ ] Slack/WhatsApp notification on high-priority emails
 - [ ] Multi-account support
 
