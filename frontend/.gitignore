@@ -36,3 +36,6 @@ __pycache__/
 # Email logs - contain real data
 *.csv
 email_log.csv
+cd C:\Users\ASUS\Projects\email-agent
+echo backend/__pycache__/ >> .gitignore
+echo backend/email_log.csv >> .gitignore
