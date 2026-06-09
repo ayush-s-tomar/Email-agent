@@ -11,55 +11,55 @@ Endpoints:
   GET  /debug           → test Gmail connection
   GET  /health          → health check
 """
-
+ 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 import agent
 import os
-
+ 
 app = FastAPI(title="Email Agent API", version="1.0.0")
-
+ 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+ 
 POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL", "5"))
-
+ 
 scheduler = BackgroundScheduler()
 scheduler.add_job(agent.run_agent_cycle, "interval", minutes=POLL_INTERVAL_MINUTES)
 scheduler.start()
-
-
+ 
+ 
 class DraftUpdate(BaseModel):
     draft_reply: str
-
-
+ 
+ 
 class ComposeRequest(BaseModel):
     name: str
     company: str
     role: str
     context: str = ""
-
-
+ 
+ 
 @app.get("/emails")
 def list_emails():
     items = list(agent.PROCESSED.values())
     priority_order = {"high": 0, "medium": 1, "low": 2}
     items.sort(key=lambda x: priority_order.get(x["analysis"].get("priority", "low"), 2))
     return {"emails": items, "total": len(items)}
-
-
+ 
+ 
 @app.post("/run")
 async def run_cycle(background_tasks: BackgroundTasks):
     background_tasks.add_task(agent.run_agent_cycle)
     return {"message": "Agent cycle started"}
-
-
+ 
+ 
 @app.post("/approve/{email_id}")
 def approve_email(email_id: str):
     item = agent.PROCESSED.get(email_id)
@@ -71,8 +71,8 @@ def approve_email(email_id: str):
     if not success:
         raise HTTPException(status_code=400, detail="No draft reply available or send failed")
     return {"message": "Reply sent", "email_id": email_id}
-
-
+ 
+ 
 @app.post("/reject/{email_id}")
 def reject_email(email_id: str):
     item = agent.PROCESSED.get(email_id)
@@ -81,8 +81,8 @@ def reject_email(email_id: str):
     agent.PROCESSED[email_id]["status"] = "rejected"
     agent.update_csv_status(email_id, "rejected")
     return {"message": "Marked as rejected", "email_id": email_id}
-
-
+ 
+ 
 @app.put("/draft/{email_id}")
 def update_draft(email_id: str, body: DraftUpdate):
     item = agent.PROCESSED.get(email_id)
@@ -90,8 +90,8 @@ def update_draft(email_id: str, body: DraftUpdate):
         raise HTTPException(status_code=404, detail="Email not found")
     agent.PROCESSED[email_id]["analysis"]["draft_reply"] = body.draft_reply
     return {"message": "Draft updated", "email_id": email_id}
-
-
+ 
+ 
 @app.get("/stats")
 def get_stats():
     items = list(agent.PROCESSED.values())
@@ -109,18 +109,18 @@ def get_stats():
         pri = item["analysis"].get("priority", "low")
         stats["by_priority"][pri] = stats["by_priority"].get(pri, 0) + 1
     return stats
-
-
+ 
+ 
 @app.post("/compose")
 def compose_email(body: ComposeRequest):
     """Generate a personalized cold email using Groq."""
     your_name = os.environ.get("YOUR_NAME", "Ayush Singh Tomar")
     your_role = os.environ.get("YOUR_ROLE", "Freelance AI Developer")
-
+ 
     prompt = f"""Write a short, personalized cold email from {your_name} ({your_role}) to {body.name} at {body.company} for a {body.role} position.
-
+ 
 Additional context: {body.context if body.context else 'None'}
-
+ 
 Rules:
 - Max 80 words
 - Sound human and genuine, not robotic
@@ -128,9 +128,11 @@ Rules:
 - End with a soft CTA like 'Would love to connect'
 - Sign off as {your_name}
 - Return ONLY the email body, no subject line, no markdown"""
-
+ 
     try:
-        result = agent.client.chat.completions.create(
+        from groq import Groq
+        groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+        result = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}]
         )
@@ -139,8 +141,8 @@ Rules:
         return {"email": email_text, "subject": subject}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
+ 
+ 
 @app.get("/debug")
 def debug():
     try:
@@ -157,8 +159,8 @@ def debug():
     except Exception as e:
         return {"status": "error", "error": str(e),
                 "gmail": os.environ.get("GMAIL_ADDRESS", "NOT SET")}
-
-
+ 
+ 
 @app.get("/health")
 def health():
     return {"status": "ok", "poll_interval_minutes": POLL_INTERVAL_MINUTES}
