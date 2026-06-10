@@ -29,6 +29,13 @@ const STATUS_STYLE = {
   rejected: { label: "Rejected", color: "#ef4444" },
 };
 
+// Confidence badge color: green ≥80%, yellow ≥60%, red <60%
+function confidenceStyle(score) {
+  const pct = Math.round((score || 0) * 100);
+  const color = pct >= 80 ? "#0ff2b2" : pct >= 60 ? "#f59e0b" : "#ef4444";
+  return { pct, color };
+}
+
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -71,10 +78,13 @@ const css = `
   .cat-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 700; flex-shrink: 0; font-family: 'DM Mono', monospace; }
   .card-meta { flex: 1; min-width: 0; }
   .card-subject { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .card-from { font-size: 12px; color: #ffffff40; display: flex; align-items: center; gap: 8px; }
+  .card-from { font-size: 12px; color: #ffffff40; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .priority-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
   .badges { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
   .badge { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.1em; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; border: 1px solid; }
+  .confidence-badge { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 4px; border: 1px solid; display: flex; align-items: center; gap: 4px; }
+  .confidence-bar { height: 3px; border-radius: 99px; background: #ffffff10; width: 32px; overflow: hidden; flex-shrink: 0; }
+  .confidence-fill { height: 100%; border-radius: 99px; transition: width 0.4s ease; }
   .summary-box { background: #ffffff05; border: 1px solid #ffffff08; border-radius: 8px; padding: 12px 14px; font-size: 12.5px; color: #94a3b8; line-height: 1.65; margin-bottom: 14px; }
   .summary-box strong { color: #cbd5e1; font-weight: 500; }
   .draft-section { margin-bottom: 14px; }
@@ -205,11 +215,12 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
   const [draft, setDraft]     = useState(analysis.draft_reply || "");
   const [loading, setLoading] = useState(false);
 
-  const cat = analysis.category || "other";
-  const pri = analysis.priority || "low";
-  const catStyle  = CATEGORY_COLOR[cat] || CATEGORY_COLOR.other;
-  const isDone    = status === "sent" || status === "rejected";
+  const cat      = analysis.category || "other";
+  const pri      = analysis.priority || "low";
+  const catStyle = CATEGORY_COLOR[cat] || CATEGORY_COLOR.other;
+  const isDone   = status === "sent" || status === "rejected";
   const statusInfo = STATUS_STYLE[status] || STATUS_STYLE.pending;
+  const { pct, color: confColor } = confidenceStyle(analysis.confidence);
 
   async function handleApprove() {
     setLoading(true);
@@ -243,6 +254,17 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
           </div>
         </div>
         <div className="badges">
+          {/* Confidence badge */}
+          <span
+            className="confidence-badge"
+            style={{ color: confColor, borderColor: `${confColor}40`, background: `${confColor}10` }}
+            title={`AI confidence: ${pct}%`}
+          >
+            <div className="confidence-bar">
+              <div className="confidence-fill" style={{ width: `${pct}%`, background: confColor }} />
+            </div>
+            {pct}%
+          </span>
           <span className="badge" style={{ color: statusInfo.color, borderColor: `${statusInfo.color}40`, background: `${statusInfo.color}10` }}>
             {statusInfo.label}
           </span>
@@ -283,12 +305,12 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
 }
 
 export default function App() {
-  const [emails, setEmails]       = useState([]);
-  const [stats, setStats]         = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [running, setRunning]     = useState(false);
-  const [filter, setFilter]       = useState("all");
-  const [lastSync, setLastSync]   = useState(null);
+  const [emails, setEmails]           = useState([]);
+  const [stats, setStats]             = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [running, setRunning]         = useState(false);
+  const [filter, setFilter]           = useState("all");
+  const [lastSync, setLastSync]       = useState(null);
   const [showCompose, setShowCompose] = useState(false);
 
   const fetchAll = useCallback(async () => {
@@ -309,14 +331,21 @@ export default function App() {
 
   useEffect(() => {
     fetchAll();
-    const t = setInterval(fetchAll, 30000);
+    // Auto-refresh every 10 seconds — picks up new emails fast
+    const t = setInterval(fetchAll, 10000);
     return () => clearInterval(t);
   }, [fetchAll]);
 
   async function triggerRun() {
     setRunning(true);
     await fetch(`${API}/run`, { method: "POST", headers: HEADERS });
-    setTimeout(() => { fetchAll(); setRunning(false); }, 5000);
+    // Poll every 3s for up to 30s to catch results quickly
+    let attempts = 0;
+    const poll = setInterval(() => {
+      fetchAll();
+      attempts++;
+      if (attempts >= 10) { clearInterval(poll); setRunning(false); }
+    }, 3000);
   }
 
   async function handleApprove(id) {
