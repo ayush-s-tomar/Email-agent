@@ -1,6 +1,7 @@
 """
 AI Email Automation Agent — Free IMAP/SMTP + Groq version
 No Google Cloud. No OAuth. Just Gmail App Password + Groq API (free).
+Now with SQLite persistence — emails survive server restarts.
 
 Author: Ayush Singh Tomar
 """
@@ -12,7 +13,7 @@ import email as emaillib
 import json
 import time
 import logging
-import csv
+import sqlite3
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -34,32 +35,171 @@ GMAIL_ADDRESS  = os.environ["GMAIL_ADDRESS"]
 GMAIL_APP_PASS = os.environ["GMAIL_APP_PASS"]
 YOUR_NAME      = os.environ.get("YOUR_NAME", "Your Name")
 YOUR_ROLE      = os.environ.get("YOUR_ROLE", "Freelance AI Developer")
-LOG_FILE       = os.environ.get("LOG_FILE", "email_log.csv")
+DB_FILE        = os.environ.get("DB_FILE", "email_agent.db")
 
-# ── Groq client ─────────────────────────────────────────────────────────────────
+# ── Groq client ──────────────────────────────────────────────────────────────
 groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-# ── Constants ───────────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 IMAP_HOST  = "imap.gmail.com"
 SMTP_HOST  = "smtp.gmail.com"
 SMTP_PORT  = 587
 CATEGORIES = ["lead", "client", "support", "newsletter", "spam", "other"]
 
-# In-memory store: email_id → { email, analysis, status }
+# In-memory cache: email_id → { email, analysis, status }
+# SQLite is the source of truth; this is just for fast reads during a session
 PROCESSED: dict[str, dict] = {}
 
 
-# ── Gmail helpers ────────────────────────────────────────────────────────────────
+# ── SQLite setup ──────────────────────────────────────────────────────────────
+
+def init_db() -> None:
+    """Create the emails table if it doesn't exist yet."""
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emails (
+                email_id        TEXT PRIMARY KEY,
+                timestamp       TEXT,
+                from_addr       TEXT,
+                to_addr         TEXT,
+                subject         TEXT,
+                date            TEXT,
+                body            TEXT,
+                category        TEXT,
+                priority        TEXT,
+                sentiment       TEXT,
+                action_required INTEGER,
+                summary         TEXT,
+                key_info        TEXT,
+                draft_reply     TEXT,
+                confidence      REAL,
+                status          TEXT DEFAULT 'pending'
+            )
+        """)
+        conn.commit()
+    logger.info("SQLite DB ready.")
+
+
+def save_to_db(email: dict, analysis: dict, status: str = "pending") -> None:
+    """Insert or replace a processed email record into SQLite."""
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO emails VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+        """, (
+            email["id"],
+            datetime.utcnow().isoformat(),
+            email.get("from", ""),
+            email.get("to", ""),
+            email.get("subject", ""),
+            email.get("date", ""),
+            email.get("body", "")[:3000],
+            analysis.get("category", "other"),
+            analysis.get("priority", "low"),
+            analysis.get("sentiment", "neutral"),
+            1 if analysis.get("action_required") else 0,
+            analysis.get("summary", ""),
+            analysis.get("key_info", ""),
+            analysis.get("draft_reply", ""),
+            float(analysis.get("confidence", 0.0)),
+            status,
+        ))
+        conn.commit()
+
+
+def update_db_status(email_id: str, status: str) -> None:
+    """Update the status of an email record in SQLite."""
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            "UPDATE emails SET status = ? WHERE email_id = ?",
+            (status, email_id)
+        )
+        conn.commit()
+
+
+def update_db_draft(email_id: str, draft: str) -> None:
+    """Update the draft reply of an email record in SQLite."""
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            "UPDATE emails SET draft_reply = ? WHERE email_id = ?",
+            (draft, email_id)
+        )
+        conn.commit()
+
+
+def load_all_from_db() -> list:
+    """
+    Load all emails from SQLite into the in-memory PROCESSED cache.
+    Called once on server startup so history is always available.
+    """
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM emails ORDER BY timestamp DESC"
+        ).fetchall()
+
+    loaded = 0
+    for row in rows:
+        email_id = row["email_id"]
+        if email_id in PROCESSED:
+            continue
+        PROCESSED[email_id] = {
+            "email": {
+                "id":      email_id,
+                "from":    row["from_addr"],
+                "to":      row["to_addr"],
+                "subject": row["subject"],
+                "date":    row["date"],
+                "body":    row["body"],
+            },
+            "analysis": {
+                "email_id":        email_id,
+                "category":        row["category"],
+                "priority":        row["priority"],
+                "sentiment":       row["sentiment"],
+                "action_required": bool(row["action_required"]),
+                "summary":         row["summary"],
+                "key_info":        row["key_info"],
+                "draft_reply":     row["draft_reply"],
+                "confidence":      row["confidence"],
+            },
+            "status": row["status"],
+        }
+        loaded += 1
+
+    logger.info(f"Loaded {loaded} email(s) from SQLite into memory.")
+    return list(PROCESSED.values())
+
+
+def get_db_stats() -> dict:
+    """Return counts by category, priority, and status from SQLite."""
+    with sqlite3.connect(DB_FILE) as conn:
+        total     = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        pending   = conn.execute("SELECT COUNT(*) FROM emails WHERE status='pending'").fetchone()[0]
+        sent      = conn.execute("SELECT COUNT(*) FROM emails WHERE status='sent'").fetchone()[0]
+        rejected  = conn.execute("SELECT COUNT(*) FROM emails WHERE status='rejected'").fetchone()[0]
+        leads     = conn.execute("SELECT COUNT(*) FROM emails WHERE category='lead'").fetchone()[0]
+        high_pri  = conn.execute("SELECT COUNT(*) FROM emails WHERE priority='high'").fetchone()[0]
+    return {
+        "total": total,
+        "pending": pending,
+        "sent": sent,
+        "rejected": rejected,
+        "leads": leads,
+        "high_priority": high_pri,
+    }
+
+
+# ── Gmail helpers ─────────────────────────────────────────────────────────────
 
 def connect_imap() -> imaplib.IMAP4_SSL:
-    """Open an authenticated IMAP connection."""
     mail = imaplib.IMAP4_SSL(IMAP_HOST)
     mail.login(GMAIL_ADDRESS, GMAIL_APP_PASS)
     return mail
 
 
 def decode_str(value) -> str:
-    """Decode a potentially encoded email header into plain text."""
     parts = decode_header(value or "")
     result = []
     for part, enc in parts:
@@ -71,10 +211,6 @@ def decode_str(value) -> str:
 
 
 def fetch_unread_emails(max_results: int = 10) -> list:
-    """
-    Fetch the most recent `max_results` unread emails from Gmail inbox.
-    Returns a list of email dicts with keys: id, from, to, subject, date, body.
-    """
     mail = connect_imap()
     mail.select("inbox")
     _, data = mail.search(None, "UNSEEN")
@@ -101,7 +237,6 @@ def fetch_unread_emails(max_results: int = 10) -> list:
 
 
 def _extract_body(msg) -> str:
-    """Pull plain-text body from a (possibly multipart) email."""
     if msg.is_multipart():
         for part in msg.walk():
             if (
@@ -114,7 +249,6 @@ def _extract_body(msg) -> str:
 
 
 def mark_as_read(uid: str) -> None:
-    """Mark a single email as read by its IMAP UID."""
     mail = connect_imap()
     mail.select("inbox")
     mail.store(uid, "+FLAGS", "\\Seen")
@@ -122,7 +256,6 @@ def mark_as_read(uid: str) -> None:
 
 
 def send_email(to: str, subject: str, body: str) -> None:
-    """Send a plain-text reply via SMTP."""
     msg = MIMEMultipart("alternative")
     msg["From"]    = GMAIL_ADDRESS
     msg["To"]      = to
@@ -138,27 +271,25 @@ def send_email(to: str, subject: str, body: str) -> None:
     logger.info(f"Reply sent → {to} | Subject: {subject}")
 
 
-# ── Groq analysis ────────────────────────────────────────────────────────────────
+# ── Groq analysis ─────────────────────────────────────────────────────────────
 
 def analyze_email(email: dict, retries: int = 3) -> dict:
-    """
-    Send an email to Groq/Llama for categorization and draft reply.
-    Retries up to `retries` times on failure, with exponential back-off.
-    Returns a structured dict with category, priority, summary, draft_reply, etc.
-    """
     prompt = _build_prompt(email)
 
     for attempt in range(1, retries + 1):
         try:
             response = groq_client.chat.completions.create(
-               model="llama-3.3-70b-versatile",
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}]
             )
             raw = response.choices[0].message.content.strip()
             raw = raw.replace("```json", "").replace("```", "").strip()
             result = json.loads(raw)
             result["email_id"] = email["id"]
-            logger.info(f"Analyzed '{email['subject'][:50]}' → {result.get('category')} / {result.get('priority')}")
+            logger.info(
+                f"Analyzed '{email['subject'][:50]}' → "
+                f"{result.get('category')} / {result.get('priority')}"
+            )
             return result
 
         except json.JSONDecodeError as e:
@@ -213,63 +344,15 @@ def _fallback_analysis(email_id: str) -> dict:
     }
 
 
-# ── CSV logging ──────────────────────────────────────────────────────────────────
-
-CSV_HEADERS = [
-    "Timestamp", "Email ID", "From", "Subject", "Category", "Priority",
-    "Sentiment", "Action Required", "Summary", "Key Info",
-    "Draft Reply", "Status", "Confidence",
-]
-
-
-def ensure_csv() -> None:
-    if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(CSV_HEADERS)
-
-
-def log_to_csv(email: dict, analysis: dict, status: str = "pending") -> None:
-    ensure_csv()
-    row = [
-        datetime.utcnow().isoformat(),
-        email["id"],
-        email["from"],
-        email["subject"],
-        analysis.get("category", ""),
-        analysis.get("priority", ""),
-        analysis.get("sentiment", ""),
-        analysis.get("action_required", ""),
-        analysis.get("summary", ""),
-        analysis.get("key_info", ""),
-        analysis.get("draft_reply", "")[:300],
-        status,
-        analysis.get("confidence", ""),
-    ]
-    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow(row)
-
-
-def update_csv_status(email_id: str, status: str) -> None:
-    ensure_csv()
-    rows = []
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        for row in csv.reader(f):
-            if len(row) > 1 and row[1] == email_id:
-                row[11] = status
-            rows.append(row)
-    with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerows(rows)
-
-
-# ── Core agent cycle ─────────────────────────────────────────────────────────────
+# ── Core agent cycle ──────────────────────────────────────────────────────────
 
 def run_agent_cycle() -> list:
     """
-    Main loop: fetch unread emails → analyze with Groq → log → store in memory.
-    Skips emails already processed in this session.
+    Main loop: fetch unread emails → analyze → save to SQLite → cache in memory.
+    Skips emails already in SQLite (survived restart) or in-memory cache.
     """
     logger.info("════ Agent cycle started ════")
-    ensure_csv()
+    init_db()
 
     emails = fetch_unread_emails(max_results=10)
     new_count = 0
@@ -280,7 +363,7 @@ def run_agent_cycle() -> list:
             continue
 
         analysis = analyze_email(email)
-        log_to_csv(email, analysis, status="pending")
+        save_to_db(email, analysis, status="pending")
         mark_as_read(email["id"])
 
         PROCESSED[email["id"]] = {
@@ -289,25 +372,25 @@ def run_agent_cycle() -> list:
             "status":   "pending",
         }
         new_count += 1
-        time.sleep(1)  # Groq is fast, 1s gap is plenty
+        time.sleep(1)
 
-    logger.info(f"════ Cycle done. New: {new_count} | Total session: {len(PROCESSED)} ════")
+    logger.info(
+        f"════ Cycle done. New: {new_count} | "
+        f"Total session: {len(PROCESSED)} ════"
+    )
     return list(PROCESSED.values())
 
 
 def send_approved_reply(email_id: str) -> bool:
-    """
-    Send the AI-drafted reply for a given email_id and mark it as sent.
-    Returns True on success, False if email not found or draft is empty.
-    """
+    """Send the AI-drafted reply and persist status to SQLite."""
     item = PROCESSED.get(email_id)
     if not item:
-        logger.warning(f"send_approved_reply: '{email_id}' not found in session.")
+        logger.warning(f"send_approved_reply: '{email_id}' not found.")
         return False
 
     draft = item["analysis"].get("draft_reply", "").strip()
     if not draft:
-        logger.warning(f"send_approved_reply: no draft reply for '{email_id}'.")
+        logger.warning(f"send_approved_reply: no draft for '{email_id}'.")
         return False
 
     email = item["email"]
@@ -318,5 +401,5 @@ def send_approved_reply(email_id: str) -> bool:
     )
 
     PROCESSED[email_id]["status"] = "sent"
-    update_csv_status(email_id, "sent")
+    update_db_status(email_id, "sent")
     return True
