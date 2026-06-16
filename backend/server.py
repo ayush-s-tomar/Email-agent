@@ -1,13 +1,15 @@
 """
 FastAPI server — bridges the agent and the React dashboard.
 Endpoints:
-  GET  /emails          → list all processed emails
-  POST /run             → trigger one agent cycle
-  POST /approve/{id}    → send the draft reply
-  POST /reject/{id}     → mark as rejected (no send)
-  PUT  /draft/{id}      → edit a draft before sending
-  GET  /stats           → summary stats
-  GET  /health          → health check
+  GET  /emails          -> list all processed emails
+  POST /run             -> trigger one agent cycle
+  POST /approve/{id}    -> send the draft reply
+  POST /reject/{id}     -> mark as rejected (no send)
+  PUT  /draft/{id}      -> edit a draft before sending
+  GET  /stats           -> summary stats
+  POST /tone/{id}       -> regenerate draft with a specific tone
+  POST /compose         -> generate a cold email
+  GET  /health          -> health check
 """
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -26,7 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Startup: init DB and load history ────────────────────────────────────────
+# ── Startup: init DB and load history ─────────────────────────────────────────
 
 @app.on_event("startup")
 def startup_event():
@@ -34,7 +36,7 @@ def startup_event():
     agent.init_db()
     agent.load_all_from_db()
 
-# ─── Auto-scheduler ───────────────────────────────────────────────────────────
+# ── Auto-scheduler ────────────────────────────────────────────────────────────
 
 POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL", "5"))
 
@@ -42,7 +44,7 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(agent.run_agent_cycle, "interval", minutes=POLL_INTERVAL_MINUTES)
 scheduler.start()
 
-# ─── Models ───────────────────────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────────────
 
 class DraftUpdate(BaseModel):
     draft_reply: str
@@ -53,7 +55,10 @@ class ComposeRequest(BaseModel):
     role: str
     context: str = ""
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
+class ToneRequest(BaseModel):
+    tone: str  # "professional" | "friendly" | "concise"
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/emails")
 def list_emails():
@@ -109,6 +114,29 @@ def update_draft(email_id: str, body: DraftUpdate):
     agent.PROCESSED[email_id]["analysis"]["draft_reply"] = body.draft_reply
     agent.update_db_draft(email_id, body.draft_reply)
     return {"message": "Draft updated", "email_id": email_id}
+
+
+@app.post("/tone/{email_id}")
+def change_tone(email_id: str, body: ToneRequest):
+    """Regenerate the draft reply using a specific tone (professional/friendly/concise)."""
+    valid_tones = {"professional", "friendly", "concise"}
+    if body.tone.lower() not in valid_tones:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid tone. Choose from: {', '.join(valid_tones)}"
+        )
+
+    item = agent.PROCESSED.get(email_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Email not found")
+    if item["status"] == "sent":
+        raise HTTPException(status_code=400, detail="Email already sent — cannot change tone")
+
+    new_draft = agent.regenerate_draft(email_id, body.tone)
+    if not new_draft:
+        raise HTTPException(status_code=500, detail="Failed to regenerate draft")
+
+    return {"draft_reply": new_draft, "tone": body.tone, "email_id": email_id}
 
 
 @app.get("/stats")

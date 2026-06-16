@@ -3,6 +3,7 @@ AI Email Automation Agent — Free IMAP/SMTP + Groq version
 No Google Cloud. No OAuth. Just Gmail App Password + Groq API (free).
 Now with SQLite persistence — emails survive server restarts.
 Now with email threading — replies land in the same Gmail thread.
+Now with tone selector — regenerate drafts as Professional / Friendly / Concise.
  
 Author: Ayush Singh Tomar
 """
@@ -47,15 +48,28 @@ SMTP_HOST  = "smtp.gmail.com"
 SMTP_PORT  = 587
 CATEGORIES = ["lead", "client", "support", "newsletter", "spam", "other"]
  
-# In-memory cache: email_id → { email, analysis, status }
-# SQLite is the source of truth; this is just for fast reads during a session
+TONE_INSTRUCTIONS = {
+    "professional": (
+        "Write in a formal, polished tone. Use complete sentences, "
+        "proper salutations, and a respectful sign-off. Sound confident and businesslike."
+    ),
+    "friendly": (
+        "Write in a warm, approachable tone. Be conversational and personable "
+        "while staying professional. Use natural language, not stiff corporate speak."
+    ),
+    "concise": (
+        "Write the shortest possible reply that still covers everything needed. "
+        "No filler words. Get to the point immediately. Max 3 sentences."
+    ),
+}
+ 
+# In-memory cache: email_id -> { email, analysis, status }
 PROCESSED: dict[str, dict] = {}
  
  
 # ── SQLite setup ──────────────────────────────────────────────────────────────
  
 def init_db() -> None:
-    """Create the emails table if it doesn't exist yet."""
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS emails (
@@ -79,18 +93,16 @@ def init_db() -> None:
                 status          TEXT DEFAULT 'pending'
             )
         """)
-        # Add threading columns to existing DBs that predate this update
         for col, coltype in [("message_id", "TEXT"), ("references_hdr", "TEXT")]:
             try:
                 conn.execute(f"ALTER TABLE emails ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
-                pass  # column already exists — safe to ignore
+                pass
         conn.commit()
     logger.info("SQLite DB ready.")
  
  
 def save_to_db(email: dict, analysis: dict, status: str = "pending") -> None:
-    """Insert or replace a processed email record into SQLite."""
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute("""
             INSERT OR REPLACE INTO emails VALUES (
@@ -104,8 +116,8 @@ def save_to_db(email: dict, analysis: dict, status: str = "pending") -> None:
             email.get("subject", ""),
             email.get("date", ""),
             email.get("body", "")[:3000],
-            email.get("message_id", ""),      # threading
-            email.get("references", ""),      # threading
+            email.get("message_id", ""),
+            email.get("references", ""),
             analysis.get("category", "other"),
             analysis.get("priority", "low"),
             analysis.get("sentiment", "neutral"),
@@ -120,7 +132,6 @@ def save_to_db(email: dict, analysis: dict, status: str = "pending") -> None:
  
  
 def update_db_status(email_id: str, status: str) -> None:
-    """Update the status of an email record in SQLite."""
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
             "UPDATE emails SET status = ? WHERE email_id = ?",
@@ -130,7 +141,6 @@ def update_db_status(email_id: str, status: str) -> None:
  
  
 def update_db_draft(email_id: str, draft: str) -> None:
-    """Update the draft reply of an email record in SQLite."""
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
             "UPDATE emails SET draft_reply = ? WHERE email_id = ?",
@@ -140,10 +150,6 @@ def update_db_draft(email_id: str, draft: str) -> None:
  
  
 def load_all_from_db() -> list:
-    """
-    Load all emails from SQLite into the in-memory PROCESSED cache.
-    Called once on server startup so history is always available.
-    """
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -186,7 +192,6 @@ def load_all_from_db() -> list:
  
  
 def get_db_stats() -> dict:
-    """Return counts by category, priority, and status from SQLite."""
     with sqlite3.connect(DB_FILE) as conn:
         total    = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
         pending  = conn.execute("SELECT COUNT(*) FROM emails WHERE status='pending'").fetchone()[0]
@@ -242,8 +247,8 @@ def fetch_unread_emails(max_results: int = 10) -> list:
             "subject":    decode_str(msg.get("Subject", "(no subject)")),
             "date":       msg.get("Date", ""),
             "body":       body[:3000],
-            "message_id": msg.get("Message-ID", ""),   # for threading
-            "references": msg.get("References", ""),   # for threading
+            "message_id": msg.get("Message-ID", ""),
+            "references": msg.get("References", ""),
         })
  
     mail.logout()
@@ -277,16 +282,11 @@ def send_email(
     message_id: str = None,
     references: str = None,
 ) -> None:
-    """
-    Send an email via SMTP.
-    Pass message_id and references to make the reply land in the same thread.
-    """
     msg = MIMEMultipart("alternative")
     msg["From"]    = GMAIL_ADDRESS
     msg["To"]      = to
     msg["Subject"] = subject
  
-    # Threading headers — this is what makes Gmail group the reply in the thread
     if message_id:
         msg["In-Reply-To"] = message_id
         msg["References"]  = f"{references or ''} {message_id}".strip()
@@ -299,7 +299,7 @@ def send_email(
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASS)
         server.sendmail(GMAIL_ADDRESS, to, msg.as_string())
  
-    logger.info(f"Reply sent → {to} | Subject: {subject}")
+    logger.info(f"Reply sent -> {to} | Subject: {subject}")
  
  
 # ── Groq analysis ─────────────────────────────────────────────────────────────
@@ -318,28 +318,78 @@ def analyze_email(email: dict, retries: int = 3) -> dict:
             result = json.loads(raw)
             result["email_id"] = email["id"]
             logger.info(
-                f"Analyzed '{email['subject'][:50]}' → "
+                f"Analyzed '{email['subject'][:50]}' -> "
                 f"{result.get('category')} / {result.get('priority')}"
             )
             return result
  
         except json.JSONDecodeError as e:
-            logger.warning(f"Attempt {attempt}: JSON parse error — {e}")
+            logger.warning(f"Attempt {attempt}: JSON parse error -- {e}")
         except Exception as e:
-            logger.warning(f"Attempt {attempt}: Groq error — {e}")
+            logger.warning(f"Attempt {attempt}: Groq error -- {e}")
  
         wait = 4 * (2 ** (attempt - 1))
-        logger.info(f"Retrying in {wait}s…")
+        logger.info(f"Retrying in {wait}s...")
         time.sleep(wait)
  
     logger.error(f"Could not analyze '{email['subject']}' after {retries} attempts.")
     return _fallback_analysis(email["id"])
  
  
+def regenerate_draft(email_id: str, tone: str) -> str:
+    """
+    Regenerate the draft reply for an existing email using a specific tone.
+    Called when the user clicks Professional / Friendly / Concise in the UI.
+    Returns the new draft text, or empty string on failure.
+    """
+    item = PROCESSED.get(email_id)
+    if not item:
+        logger.warning(f"regenerate_draft: '{email_id}' not found.")
+        return ""
+ 
+    tone = tone.lower().strip()
+    tone_instruction = TONE_INSTRUCTIONS.get(tone, TONE_INSTRUCTIONS["professional"])
+    email = item["email"]
+ 
+    prompt = f"""You are an email assistant for {YOUR_NAME}, a {YOUR_ROLE}.
+ 
+Rewrite a reply to the email below using this specific tone:
+TONE: {tone.upper()} -- {tone_instruction}
+ 
+EMAIL:
+From: {email['from']}
+Subject: {email['subject']}
+Body:
+{email['body'][:2000]}
+ 
+Rules:
+- Reply ONLY with the email body text. No subject line. No JSON. No explanation.
+- Sign off as {YOUR_NAME}.
+- Match the tone instruction strictly."""
+ 
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        new_draft = response.choices[0].message.content.strip()
+ 
+        # Update in-memory cache and SQLite
+        PROCESSED[email_id]["analysis"]["draft_reply"] = new_draft
+        update_db_draft(email_id, new_draft)
+ 
+        logger.info(f"Regenerated draft for '{email['subject'][:50]}' -> tone: {tone}")
+        return new_draft
+ 
+    except Exception as e:
+        logger.error(f"regenerate_draft error: {e}")
+        return ""
+ 
+ 
 def _build_prompt(email: dict) -> str:
     return f"""You are an email assistant for {YOUR_NAME}, a {YOUR_ROLE}.
  
-Analyze this email and respond ONLY with valid JSON — no markdown, no explanation, no backticks.
+Analyze this email and respond ONLY with valid JSON -- no markdown, no explanation, no backticks.
  
 EMAIL:
 From: {email['from']}
@@ -366,7 +416,7 @@ def _fallback_analysis(email_id: str) -> dict:
         "email_id":        email_id,
         "category":        "other",
         "priority":        "low",
-        "summary":         "Could not analyze — will retry next cycle.",
+        "summary":         "Could not analyze -- will retry next cycle.",
         "key_info":        "",
         "sentiment":       "neutral",
         "action_required": False,
@@ -378,11 +428,7 @@ def _fallback_analysis(email_id: str) -> dict:
 # ── Core agent cycle ──────────────────────────────────────────────────────────
  
 def run_agent_cycle() -> list:
-    """
-    Main loop: fetch unread emails → analyze → save to SQLite → cache in memory.
-    Skips emails already in SQLite (survived restart) or in-memory cache.
-    """
-    logger.info("════ Agent cycle started ════")
+    logger.info("Agent cycle started")
     init_db()
  
     emails = fetch_unread_emails(max_results=10)
@@ -405,15 +451,11 @@ def run_agent_cycle() -> list:
         new_count += 1
         time.sleep(1)
  
-    logger.info(
-        f"════ Cycle done. New: {new_count} | "
-        f"Total session: {len(PROCESSED)} ════"
-    )
+    logger.info(f"Cycle done. New: {new_count} | Total session: {len(PROCESSED)}")
     return list(PROCESSED.values())
  
  
 def send_approved_reply(email_id: str) -> bool:
-    """Send the AI-drafted reply and persist status to SQLite."""
     item = PROCESSED.get(email_id)
     if not item:
         logger.warning(f"send_approved_reply: '{email_id}' not found.")
@@ -429,8 +471,8 @@ def send_approved_reply(email_id: str) -> bool:
         to=email["from"],
         subject=f"Re: {email['subject']}",
         body=draft,
-        message_id=email.get("message_id", ""),   # threading ✓
-        references=email.get("references", ""),   # threading ✓
+        message_id=email.get("message_id", ""),
+        references=email.get("references", ""),
     )
  
     PROCESSED[email_id]["status"] = "sent"

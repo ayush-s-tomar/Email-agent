@@ -29,7 +29,12 @@ const STATUS_STYLE = {
   rejected: { label: "Rejected", color: "#ef4444" },
 };
 
-// Confidence badge color: green ≥80%, yellow ≥60%, red <60%
+const TONES = [
+  { key: "professional", label: "Professional", icon: "◈" },
+  { key: "friendly",     label: "Friendly",     icon: "◉" },
+  { key: "concise",      label: "Concise",      icon: "→" },
+];
+
 function confidenceStyle(score) {
   const pct = Math.round((score || 0) * 100);
   const color = pct >= 80 ? "#0ff2b2" : pct >= 60 ? "#f59e0b" : "#ef4444";
@@ -88,8 +93,19 @@ const css = `
   .summary-box { background: #ffffff05; border: 1px solid #ffffff08; border-radius: 8px; padding: 12px 14px; font-size: 12.5px; color: #94a3b8; line-height: 1.65; margin-bottom: 14px; }
   .summary-box strong { color: #cbd5e1; font-weight: 500; }
   .draft-section { margin-bottom: 14px; }
-  .draft-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .draft-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; flex-wrap: wrap; }
   .draft-label { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.15em; color: #ffffff25; text-transform: uppercase; }
+  .draft-header-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+  /* ── Tone selector ── */
+  .tone-group { display: flex; gap: 4px; }
+  .tone-btn { font-size: 10px; padding: 3px 9px; border: 1px solid #ffffff12; border-radius: 4px; background: transparent; color: #ffffff35; cursor: pointer; font-family: 'DM Mono', monospace; letter-spacing: 0.05em; transition: all 0.15s; display: flex; align-items: center; gap-4px; }
+  .tone-btn:hover:not(:disabled) { border-color: #ffffff30; color: #ffffff70; }
+  .tone-btn.active { border-color: #0ff2b260; color: #0ff2b2; background: #0ff2b210; }
+  .tone-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .tone-spinning { display: inline-block; animation: spin 0.8s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
   .edit-btn { font-size: 11px; padding: 3px 10px; border: 1px solid #ffffff15; border-radius: 4px; background: transparent; color: #ffffff40; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.15s; }
   .edit-btn:hover { border-color: #ffffff30; color: #ffffff70; }
   .draft-text { background: #0a1628; border: 1px solid #1e3a5f; border-radius: 8px; padding: 12px 14px; font-size: 12.5px; color: #93c5fd; white-space: pre-wrap; line-height: 1.65; font-family: 'DM Mono', monospace; }
@@ -170,7 +186,6 @@ function ComposeModal({ onClose }) {
       <div className="modal">
         <div className="modal-title">✦ Compose cold email</div>
         <div className="modal-sub">Powered by LLaMA 3.3 · 80 words · signed as you</div>
-
         <div className="field">
           <label>Recipient name</label>
           <input placeholder="e.g. Sarah Chen" value={form.name} onChange={e => setForm({...form, name: e.target.value})} />
@@ -187,14 +202,12 @@ function ComposeModal({ onClose }) {
           <label>Extra context (optional)</label>
           <textarea placeholder="e.g. I saw their recent blog post on LLM agents..." value={form.context} onChange={e => setForm({...form, context: e.target.value})} />
         </div>
-
         <div className="modal-actions">
           <button className="generate-btn" onClick={handleGenerate} disabled={loading || !form.name || !form.company || !form.role}>
             {loading ? "Generating…" : "⟳ Generate email"}
           </button>
           <button className="cancel-btn" onClick={onClose}>Cancel</button>
         </div>
-
         {result && (
           <div className="result-box">
             <div className="result-subject">SUBJECT: <span>{result.subject}</span></div>
@@ -211,9 +224,11 @@ function ComposeModal({ onClose }) {
 
 function EmailCard({ item, onApprove, onReject, onDraftChange }) {
   const { email, analysis, status } = item;
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft]     = useState(analysis.draft_reply || "");
-  const [loading, setLoading] = useState(false);
+  const [editing, setEditing]   = useState(false);
+  const [draft, setDraft]       = useState(analysis.draft_reply || "");
+  const [loading, setLoading]   = useState(false);
+  const [activeTone, setActiveTone] = useState(null);
+  const [toneLoading, setToneLoading] = useState(false);
 
   const cat      = analysis.category || "other";
   const pri      = analysis.priority || "low";
@@ -221,6 +236,28 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
   const isDone   = status === "sent" || status === "rejected";
   const statusInfo = STATUS_STYLE[status] || STATUS_STYLE.pending;
   const { pct, color: confColor } = confidenceStyle(analysis.confidence);
+
+  async function handleTone(tone) {
+    if (toneLoading) return;
+    setToneLoading(true);
+    setActiveTone(tone);
+    try {
+      const res = await fetch(`${API}/tone/${email.id}`, {
+        method: "POST",
+        headers: HEADERS,
+        body: JSON.stringify({ tone }),
+      });
+      const data = await res.json();
+      if (data.draft_reply) {
+        setDraft(data.draft_reply);
+        setEditing(false); // show the new draft in read mode
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setToneLoading(false);
+    }
+  }
 
   async function handleApprove() {
     setLoading(true);
@@ -254,7 +291,6 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
           </div>
         </div>
         <div className="badges">
-          {/* Confidence badge */}
           <span
             className="confidence-badge"
             style={{ color: confColor, borderColor: `${confColor}40`, background: `${confColor}10` }}
@@ -283,7 +319,31 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
         <div className="draft-section">
           <div className="draft-header">
             <span className="draft-label">Draft reply</span>
-            {!isDone && <button className="edit-btn" onClick={() => setEditing(!editing)}>{editing ? "Cancel" : "Edit"}</button>}
+            {!isDone && (
+              <div className="draft-header-right">
+                {/* Tone selector buttons */}
+                <div className="tone-group">
+                  {TONES.map(t => (
+                    <button
+                      key={t.key}
+                      className={`tone-btn ${activeTone === t.key ? "active" : ""}`}
+                      onClick={() => handleTone(t.key)}
+                      disabled={toneLoading || loading}
+                      title={`Rewrite as ${t.label}`}
+                    >
+                      {toneLoading && activeTone === t.key
+                        ? <span className="tone-spinning">⟳</span>
+                        : t.icon
+                      }
+                      {" "}{t.label}
+                    </button>
+                  ))}
+                </div>
+                <button className="edit-btn" onClick={() => setEditing(!editing)}>
+                  {editing ? "Cancel" : "Edit"}
+                </button>
+              </div>
+            )}
           </div>
           {editing
             ? <textarea className="draft-textarea" rows={6} value={draft} onChange={e => setDraft(e.target.value)} />
@@ -331,7 +391,6 @@ export default function App() {
 
   useEffect(() => {
     fetchAll();
-    // Auto-refresh every 10 seconds — picks up new emails fast
     const t = setInterval(fetchAll, 10000);
     return () => clearInterval(t);
   }, [fetchAll]);
@@ -339,7 +398,6 @@ export default function App() {
   async function triggerRun() {
     setRunning(true);
     await fetch(`${API}/run`, { method: "POST", headers: HEADERS });
-    // Poll every 3s for up to 30s to catch results quickly
     let attempts = 0;
     const poll = setInterval(() => {
       fetchAll();
