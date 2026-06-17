@@ -146,6 +146,9 @@ const css = `
   .copy-btn { margin-top: 12px; width: 100%; padding: 9px; background: #3b82f610; color: #60a5fa; border: 1px solid #3b82f630; border-radius: 7px; font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.15s; }
   .copy-btn:hover { background: #3b82f620; border-color: #3b82f6; }
   .copy-btn.copied { background: #0ff2b215; color: #0ff2b2; border-color: #0ff2b230; }
+
+  /* ── Backend wake-up notice ── */
+  .wake-banner { font-family: 'DM Mono', monospace; font-size: 11px; color: #f59e0b; background: #f59e0b10; border: 1px solid #f59e0b30; border-radius: 6px; padding: 6px 12px; margin-right: 4px; }
 `;
 
 function ComposeModal({ onClose }) {
@@ -261,16 +264,26 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
 
   async function handleApprove() {
     setLoading(true);
-    if (editing) await onDraftChange(email.id, draft);
-    await onApprove(email.id);
-    setLoading(false);
-    setEditing(false);
+    try {
+      if (editing) await onDraftChange(email.id, draft);
+      await onApprove(email.id);
+      setEditing(false);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleReject() {
     setLoading(true);
-    await onReject(email.id);
-    setLoading(false);
+    try {
+      await onReject(email.id);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -369,6 +382,7 @@ export default function App() {
   const [stats, setStats]             = useState(null);
   const [loading, setLoading]         = useState(true);
   const [running, setRunning]         = useState(false);
+  const [waking, setWaking]           = useState(false);
   const [filter, setFilter]           = useState("all");
   const [lastSync, setLastSync]       = useState(null);
   const [showCompose, setShowCompose] = useState(false);
@@ -397,12 +411,39 @@ export default function App() {
 
   async function triggerRun() {
     setRunning(true);
-    await fetch(`${API}/run`, { method: "POST", headers: HEADERS });
+    setWaking(true);
+
+    // Render's free tier sleeps after inactivity — the first request
+    // after a quiet period can take 30-50s just to wake the server up.
+    // A hard timeout + try/catch ensures the button ALWAYS resets,
+    // even if the wake-up request itself fails or hangs.
+    const controller = new AbortController();
+    const hardTimeout = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      await fetch(`${API}/run`, {
+        method: "POST",
+        headers: HEADERS,
+        signal: controller.signal,
+      });
+    } catch (e) {
+      console.error("Run request failed or timed out:", e);
+    } finally {
+      clearTimeout(hardTimeout);
+      setWaking(false);
+    }
+
+    // Poll for fresh results regardless of whether the run request
+    // above succeeded, failed, or timed out — the agent may still be
+    // working server-side.
     let attempts = 0;
-    const poll = setInterval(() => {
-      fetchAll();
+    const poll = setInterval(async () => {
+      await fetchAll();
       attempts++;
-      if (attempts >= 10) { clearInterval(poll); setRunning(false); }
+      if (attempts >= 10) {
+        clearInterval(poll);
+        setRunning(false);
+      }
     }, 3000);
   }
 
@@ -437,6 +478,7 @@ export default function App() {
         <div className="logo"><div className="logo-dot" />Email Agent</div>
         <div style={{ flex: 1 }} />
         {lastSync && <span className="sync-label">SYNCED {lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+        {waking && <span className="wake-banner">Waking up server…</span>}
         <button className="compose-btn" onClick={() => setShowCompose(true)}>✦ Compose</button>
         <button className="run-btn" onClick={triggerRun} disabled={running}>
           {running ? "Running…" : "⟳ Run Now"}
