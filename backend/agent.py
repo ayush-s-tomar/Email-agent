@@ -1,6 +1,9 @@
 """
 AI Email Automation Agent — Free IMAP/SMTP + Groq version
 No Google Cloud. No OAuth. Just Gmail App Password + Groq API (free).
+Now with SQLite persistence — emails survive server restarts.
+Now with email threading — replies land in the same Gmail thread.
+Now with tone selector — regenerate drafts as Professional / Friendly / Concise.
 
 Author: Ayush Singh Tomar
 """
@@ -12,7 +15,7 @@ import email as emaillib
 import json
 import time
 import logging
-import csv
+import sqlite3
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -34,32 +37,187 @@ GMAIL_ADDRESS  = os.environ["GMAIL_ADDRESS"]
 GMAIL_APP_PASS = os.environ["GMAIL_APP_PASS"]
 YOUR_NAME      = os.environ.get("YOUR_NAME", "Your Name")
 YOUR_ROLE      = os.environ.get("YOUR_ROLE", "Freelance AI Developer")
-LOG_FILE       = os.environ.get("LOG_FILE", "email_log.csv")
+DB_FILE        = os.environ.get("DB_FILE", "email_agent.db")
 
-# ── Groq client ─────────────────────────────────────────────────────────────────
+# ── Groq client ───────────────────────────────────────────────────────────────
 groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-# ── Constants ───────────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 IMAP_HOST  = "imap.gmail.com"
 SMTP_HOST  = "smtp.gmail.com"
 SMTP_PORT  = 587
 CATEGORIES = ["lead", "client", "support", "newsletter", "spam", "other"]
 
-# In-memory store: email_id → { email, analysis, status }
+TONE_INSTRUCTIONS = {
+    "professional": (
+        "Write in a formal, polished tone. Use complete sentences, "
+        "proper salutations, and a respectful sign-off. Sound confident and businesslike."
+    ),
+    "friendly": (
+        "Write in a warm, approachable tone. Be conversational and personable "
+        "while staying professional. Use natural language, not stiff corporate speak."
+    ),
+    "concise": (
+        "Write the shortest possible reply that still covers everything needed. "
+        "No filler words. Get to the point immediately. Max 3 sentences."
+    ),
+}
+
+# In-memory cache: email_id -> { email, analysis, status }
 PROCESSED: dict[str, dict] = {}
 
 
-# ── Gmail helpers ────────────────────────────────────────────────────────────────
+# ── SQLite setup ──────────────────────────────────────────────────────────────
+
+def init_db() -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emails (
+                email_id        TEXT PRIMARY KEY,
+                timestamp       TEXT,
+                from_addr       TEXT,
+                to_addr         TEXT,
+                subject         TEXT,
+                date            TEXT,
+                body            TEXT,
+                message_id      TEXT,
+                references_hdr  TEXT,
+                category        TEXT,
+                priority        TEXT,
+                sentiment       TEXT,
+                action_required INTEGER,
+                summary         TEXT,
+                key_info        TEXT,
+                draft_reply     TEXT,
+                confidence      REAL,
+                status          TEXT DEFAULT 'pending'
+            )
+        """)
+        for col, coltype in [("message_id", "TEXT"), ("references_hdr", "TEXT")]:
+            try:
+                conn.execute(f"ALTER TABLE emails ADD COLUMN {col} {coltype}")
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
+    logger.info("SQLite DB ready.")
+
+
+def save_to_db(email: dict, analysis: dict, status: str = "pending") -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO emails VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+        """, (
+            email["id"],
+            datetime.utcnow().isoformat(),
+            email.get("from", ""),
+            email.get("to", ""),
+            email.get("subject", ""),
+            email.get("date", ""),
+            email.get("body", "")[:3000],
+            email.get("message_id", ""),
+            email.get("references", ""),
+            analysis.get("category", "other"),
+            analysis.get("priority", "low"),
+            analysis.get("sentiment", "neutral"),
+            1 if analysis.get("action_required") else 0,
+            analysis.get("summary", ""),
+            analysis.get("key_info", ""),
+            analysis.get("draft_reply", ""),
+            float(analysis.get("confidence", 0.0)),
+            status,
+        ))
+        conn.commit()
+
+
+def update_db_status(email_id: str, status: str) -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            "UPDATE emails SET status = ? WHERE email_id = ?",
+            (status, email_id)
+        )
+        conn.commit()
+
+
+def update_db_draft(email_id: str, draft: str) -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            "UPDATE emails SET draft_reply = ? WHERE email_id = ?",
+            (draft, email_id)
+        )
+        conn.commit()
+
+
+def load_all_from_db() -> list:
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM emails ORDER BY timestamp DESC"
+        ).fetchall()
+
+    loaded = 0
+    for row in rows:
+        email_id = row["email_id"]
+        if email_id in PROCESSED:
+            continue
+        PROCESSED[email_id] = {
+            "email": {
+                "id":         email_id,
+                "from":       row["from_addr"],
+                "to":         row["to_addr"],
+                "subject":    row["subject"],
+                "date":       row["date"],
+                "body":       row["body"],
+                "message_id": row["message_id"] or "",
+                "references": row["references_hdr"] or "",
+            },
+            "analysis": {
+                "email_id":        email_id,
+                "category":        row["category"],
+                "priority":        row["priority"],
+                "sentiment":       row["sentiment"],
+                "action_required": bool(row["action_required"]),
+                "summary":         row["summary"],
+                "key_info":        row["key_info"],
+                "draft_reply":     row["draft_reply"],
+                "confidence":      row["confidence"],
+            },
+            "status": row["status"],
+        }
+        loaded += 1
+
+    logger.info(f"Loaded {loaded} email(s) from SQLite into memory.")
+    return list(PROCESSED.values())
+
+
+def get_db_stats() -> dict:
+    with sqlite3.connect(DB_FILE) as conn:
+        total    = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        pending  = conn.execute("SELECT COUNT(*) FROM emails WHERE status='pending'").fetchone()[0]
+        sent     = conn.execute("SELECT COUNT(*) FROM emails WHERE status='sent'").fetchone()[0]
+        rejected = conn.execute("SELECT COUNT(*) FROM emails WHERE status='rejected'").fetchone()[0]
+        leads    = conn.execute("SELECT COUNT(*) FROM emails WHERE category='lead'").fetchone()[0]
+        high_pri = conn.execute("SELECT COUNT(*) FROM emails WHERE priority='high'").fetchone()[0]
+    return {
+        "total":         total,
+        "pending":       pending,
+        "sent":          sent,
+        "rejected":      rejected,
+        "leads":         leads,
+        "high_priority": high_pri,
+    }
+
+
+# ── Gmail helpers ─────────────────────────────────────────────────────────────
 
 def connect_imap() -> imaplib.IMAP4_SSL:
-    """Open an authenticated IMAP connection."""
     mail = imaplib.IMAP4_SSL(IMAP_HOST)
     mail.login(GMAIL_ADDRESS, GMAIL_APP_PASS)
     return mail
 
 
 def decode_str(value) -> str:
-    """Decode a potentially encoded email header into plain text."""
     parts = decode_header(value or "")
     result = []
     for part, enc in parts:
@@ -71,10 +229,6 @@ def decode_str(value) -> str:
 
 
 def fetch_unread_emails(max_results: int = 10) -> list:
-    """
-    Fetch the most recent `max_results` unread emails from Gmail inbox.
-    Returns a list of email dicts with keys: id, from, to, subject, date, body.
-    """
     mail = connect_imap()
     mail.select("inbox")
     _, data = mail.search(None, "UNSEEN")
@@ -87,12 +241,14 @@ def fetch_unread_emails(max_results: int = 10) -> list:
         msg = emaillib.message_from_bytes(raw)
         body = _extract_body(msg)
         emails.append({
-            "id":      uid.decode(),
-            "from":    decode_str(msg.get("From", "")),
-            "to":      decode_str(msg.get("To", "")),
-            "subject": decode_str(msg.get("Subject", "(no subject)")),
-            "date":    msg.get("Date", ""),
-            "body":    body[:3000],
+            "id":         uid.decode(),
+            "from":       decode_str(msg.get("From", "")),
+            "to":         decode_str(msg.get("To", "")),
+            "subject":    decode_str(msg.get("Subject", "(no subject)")),
+            "date":       msg.get("Date", ""),
+            "body":       body[:3000],
+            "message_id": msg.get("Message-ID", ""),
+            "references": msg.get("References", ""),
         })
 
     mail.logout()
@@ -101,7 +257,6 @@ def fetch_unread_emails(max_results: int = 10) -> list:
 
 
 def _extract_body(msg) -> str:
-    """Pull plain-text body from a (possibly multipart) email."""
     if msg.is_multipart():
         for part in msg.walk():
             if (
@@ -114,19 +269,28 @@ def _extract_body(msg) -> str:
 
 
 def mark_as_read(uid: str) -> None:
-    """Mark a single email as read by its IMAP UID."""
     mail = connect_imap()
     mail.select("inbox")
     mail.store(uid, "+FLAGS", "\\Seen")
     mail.logout()
 
 
-def send_email(to: str, subject: str, body: str) -> None:
-    """Send a plain-text reply via SMTP."""
+def send_email(
+    to: str,
+    subject: str,
+    body: str,
+    message_id: str = None,
+    references: str = None,
+) -> None:
     msg = MIMEMultipart("alternative")
     msg["From"]    = GMAIL_ADDRESS
     msg["To"]      = to
     msg["Subject"] = subject
+
+    if message_id:
+        msg["In-Reply-To"] = message_id
+        msg["References"]  = f"{references or ''} {message_id}".strip()
+
     msg.attach(MIMEText(body, "plain"))
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
@@ -135,49 +299,91 @@ def send_email(to: str, subject: str, body: str) -> None:
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASS)
         server.sendmail(GMAIL_ADDRESS, to, msg.as_string())
 
-    logger.info(f"Reply sent → {to} | Subject: {subject}")
+    logger.info(f"Reply sent -> {to} | Subject: {subject}")
 
 
-# ── Groq analysis ────────────────────────────────────────────────────────────────
+# ── Groq analysis ─────────────────────────────────────────────────────────────
 
 def analyze_email(email: dict, retries: int = 3) -> dict:
-    """
-    Send an email to Groq/Llama for categorization and draft reply.
-    Retries up to `retries` times on failure, with exponential back-off.
-    Returns a structured dict with category, priority, summary, draft_reply, etc.
-    """
     prompt = _build_prompt(email)
 
     for attempt in range(1, retries + 1):
         try:
             response = groq_client.chat.completions.create(
-               model="llama-3.3-70b-versatile",
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}]
             )
             raw = response.choices[0].message.content.strip()
             raw = raw.replace("```json", "").replace("```", "").strip()
             result = json.loads(raw)
             result["email_id"] = email["id"]
-            logger.info(f"Analyzed '{email['subject'][:50]}' → {result.get('category')} / {result.get('priority')}")
+            logger.info(
+                f"Analyzed '{email['subject'][:50]}' -> "
+                f"{result.get('category')} / {result.get('priority')}"
+            )
             return result
 
         except json.JSONDecodeError as e:
-            logger.warning(f"Attempt {attempt}: JSON parse error — {e}")
+            logger.warning(f"Attempt {attempt}: JSON parse error -- {e}")
         except Exception as e:
-            logger.warning(f"Attempt {attempt}: Groq error — {e}")
+            logger.warning(f"Attempt {attempt}: Groq error -- {e}")
 
         wait = 4 * (2 ** (attempt - 1))
-        logger.info(f"Retrying in {wait}s…")
+        logger.info(f"Retrying in {wait}s...")
         time.sleep(wait)
 
     logger.error(f"Could not analyze '{email['subject']}' after {retries} attempts.")
     return _fallback_analysis(email["id"])
 
 
+def regenerate_draft(email_id: str, tone: str) -> str:
+    item = PROCESSED.get(email_id)
+    if not item:
+        logger.warning(f"regenerate_draft: '{email_id}' not found.")
+        return ""
+
+    tone = tone.lower().strip()
+    tone_instruction = TONE_INSTRUCTIONS.get(tone, TONE_INSTRUCTIONS["professional"])
+    email = item["email"]
+
+    prompt = f"""You are an email assistant for {YOUR_NAME}, a {YOUR_ROLE}.
+
+Rewrite a reply to the email below using this specific tone:
+TONE: {tone.upper()} -- {tone_instruction}
+
+EMAIL:
+From: {email['from']}
+Subject: {email['subject']}
+Body:
+{email['body'][:2000]}
+
+Rules:
+- Reply ONLY with the email body text. No subject line. No JSON. No explanation.
+- Sign off as {YOUR_NAME}.
+- Match the tone instruction strictly."""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        new_draft = response.choices[0].message.content.strip()
+
+        PROCESSED[email_id]["analysis"]["draft_reply"] = new_draft
+        update_db_draft(email_id, new_draft)
+
+        logger.info(f"Regenerated draft for '{email['subject'][:50]}' -> tone: {tone}")
+        return new_draft
+
+    except Exception as e:
+        logger.error(f"regenerate_draft error: {e}")
+        return ""
+
+
 def _build_prompt(email: dict) -> str:
     return f"""You are an email assistant for {YOUR_NAME}, a {YOUR_ROLE}.
 
-Analyze this email and respond ONLY with valid JSON — no markdown, no explanation, no backticks.
+Analyze this email and respond ONLY with valid JSON -- no markdown, no explanation, no backticks.
 
 EMAIL:
 From: {email['from']}
@@ -204,7 +410,7 @@ def _fallback_analysis(email_id: str) -> dict:
         "email_id":        email_id,
         "category":        "other",
         "priority":        "low",
-        "summary":         "Could not analyze — will retry next cycle.",
+        "summary":         "Could not analyze -- will retry next cycle.",
         "key_info":        "",
         "sentiment":       "neutral",
         "action_required": False,
@@ -213,63 +419,11 @@ def _fallback_analysis(email_id: str) -> dict:
     }
 
 
-# ── CSV logging ──────────────────────────────────────────────────────────────────
-
-CSV_HEADERS = [
-    "Timestamp", "Email ID", "From", "Subject", "Category", "Priority",
-    "Sentiment", "Action Required", "Summary", "Key Info",
-    "Draft Reply", "Status", "Confidence",
-]
-
-
-def ensure_csv() -> None:
-    if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(CSV_HEADERS)
-
-
-def log_to_csv(email: dict, analysis: dict, status: str = "pending") -> None:
-    ensure_csv()
-    row = [
-        datetime.utcnow().isoformat(),
-        email["id"],
-        email["from"],
-        email["subject"],
-        analysis.get("category", ""),
-        analysis.get("priority", ""),
-        analysis.get("sentiment", ""),
-        analysis.get("action_required", ""),
-        analysis.get("summary", ""),
-        analysis.get("key_info", ""),
-        analysis.get("draft_reply", "")[:300],
-        status,
-        analysis.get("confidence", ""),
-    ]
-    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow(row)
-
-
-def update_csv_status(email_id: str, status: str) -> None:
-    ensure_csv()
-    rows = []
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        for row in csv.reader(f):
-            if len(row) > 1 and row[1] == email_id:
-                row[11] = status
-            rows.append(row)
-    with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerows(rows)
-
-
-# ── Core agent cycle ─────────────────────────────────────────────────────────────
+# ── Core agent cycle ──────────────────────────────────────────────────────────
 
 def run_agent_cycle() -> list:
-    """
-    Main loop: fetch unread emails → analyze with Groq → log → store in memory.
-    Skips emails already processed in this session.
-    """
-    logger.info("════ Agent cycle started ════")
-    ensure_csv()
+    logger.info("Agent cycle started")
+    init_db()
 
     emails = fetch_unread_emails(max_results=10)
     new_count = 0
@@ -280,7 +434,7 @@ def run_agent_cycle() -> list:
             continue
 
         analysis = analyze_email(email)
-        log_to_csv(email, analysis, status="pending")
+        save_to_db(email, analysis, status="pending")
         mark_as_read(email["id"])
 
         PROCESSED[email["id"]] = {
@@ -289,25 +443,21 @@ def run_agent_cycle() -> list:
             "status":   "pending",
         }
         new_count += 1
-        time.sleep(1)  # Groq is fast, 1s gap is plenty
+        time.sleep(1)
 
-    logger.info(f"════ Cycle done. New: {new_count} | Total session: {len(PROCESSED)} ════")
+    logger.info(f"Cycle done. New: {new_count} | Total session: {len(PROCESSED)}")
     return list(PROCESSED.values())
 
 
 def send_approved_reply(email_id: str) -> bool:
-    """
-    Send the AI-drafted reply for a given email_id and mark it as sent.
-    Returns True on success, False if email not found or draft is empty.
-    """
     item = PROCESSED.get(email_id)
     if not item:
-        logger.warning(f"send_approved_reply: '{email_id}' not found in session.")
+        logger.warning(f"send_approved_reply: '{email_id}' not found.")
         return False
 
     draft = item["analysis"].get("draft_reply", "").strip()
     if not draft:
-        logger.warning(f"send_approved_reply: no draft reply for '{email_id}'.")
+        logger.warning(f"send_approved_reply: no draft for '{email_id}'.")
         return False
 
     email = item["email"]
@@ -315,8 +465,10 @@ def send_approved_reply(email_id: str) -> bool:
         to=email["from"],
         subject=f"Re: {email['subject']}",
         body=draft,
+        message_id=email.get("message_id", ""),
+        references=email.get("references", ""),
     )
 
     PROCESSED[email_id]["status"] = "sent"
-    update_csv_status(email_id, "sent")
+    update_db_status(email_id, "sent")
     return True
