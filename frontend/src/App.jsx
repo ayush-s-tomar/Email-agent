@@ -114,7 +114,7 @@ const css = `
   .draft-label { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.15em; color: #ffffff25; text-transform: uppercase; }
   .draft-header-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .tone-group { display: flex; gap: 4px; }
-  .tone-btn { font-size: 10px; padding: 3px 9px; border: 1px solid #ffffff12; border-radius: 4px; background: transparent; color: #ffffff35; cursor: pointer; font-family: 'DM Mono', monospace; letter-spacing: 0.05em; transition: all 0.15s; display: flex; align-items: center; gap-4px; }
+  .tone-btn { font-size: 10px; padding: 3px 9px; border: 1px solid #ffffff12; border-radius: 4px; background: transparent; color: #ffffff35; cursor: pointer; font-family: 'DM Mono', monospace; letter-spacing: 0.05em; transition: all 0.15s; display: flex; align-items: center; gap: 4px; }
   .tone-btn:hover:not(:disabled) { border-color: #ffffff30; color: #ffffff70; }
   .tone-btn.active { border-color: #0ff2b260; color: #0ff2b2; background: #0ff2b210; }
   .tone-btn:disabled { opacity: 0.3; cursor: not-allowed; }
@@ -536,20 +536,54 @@ export default function App() {
     return () => clearInterval(t);
   }, [fetchAll]);
 
-  async function triggerRun() {
-    setRunning(true); setWaking(true);
-    const controller = new AbortController();
-    const hardTimeout = setTimeout(() => controller.abort(), 60000);
+  // Lightweight stats-only fetch, used internally by triggerRun to detect
+  // when a new email has actually landed without re-rendering the whole list.
+  async function fetchStatsOnce() {
     try {
-      await fetch(`${API}/run`, { method: "POST", headers: HEADERS, signal: controller.signal });
-    } catch (e) { console.error("Run request failed or timed out:", e); }
-    finally { clearTimeout(hardTimeout); setWaking(false); }
-    let attempts = 0;
-    const poll = setInterval(async () => {
+      const res = await fetch(`${API}/stats`, { headers: HEADERS });
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  async function triggerRun() {
+    if (running) return;
+    setRunning(true);
+    setWaking(true);
+
+    const MAX_WAIT_MS = 60000;
+    const POLL_EVERY_MS = 3000;
+    const startTime = Date.now();
+
+    try {
+      const before = await fetchStatsOnce();
+      const startTotal = before?.total ?? null;
+
+      const controller = new AbortController();
+      const kickoffTimeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        await fetch(`${API}/run`, { method: "POST", headers: HEADERS, signal: controller.signal });
+      } finally {
+        clearTimeout(kickoffTimeout);
+        setWaking(false);
+      }
+
+      // Poll /stats until a new email actually shows up, or until MAX_WAIT_MS elapses.
+      while (Date.now() - startTime < MAX_WAIT_MS) {
+        await new Promise(r => setTimeout(r, POLL_EVERY_MS));
+        const after = await fetchStatsOnce();
+        if (after && startTotal !== null && after.total > startTotal) break;
+      }
+    } catch (e) {
+      console.error("Run failed:", e);
+    } finally {
+      // Guaranteed to run no matter what happened above — this is what
+      // prevents the button from getting permanently stuck on "Running…".
       await fetchAll();
-      attempts++;
-      if (attempts >= 10) { clearInterval(poll); setRunning(false); }
-    }, 3000);
+      setRunning(false);
+      setWaking(false);
+    }
   }
 
   async function handleApprove(id) { await fetch(`${API}/approve/${id}`, { method: "POST", headers: HEADERS }); fetchAll(); }
