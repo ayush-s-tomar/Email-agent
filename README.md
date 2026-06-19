@@ -1,8 +1,8 @@
 # 📧 AI Email Automation Agent
 
-An AI-powered email agent that reads your Gmail, categorizes emails, drafts professional replies using LLaMA 3, and lets you approve or reject them from a clean dashboard — all without touching Google Cloud.
+An AI-powered email agent that reads your Gmail, categorizes emails, drafts professional replies using LLaMA 3.3, and lets you approve or reject them from a clean dashboard — all without touching Google Cloud.
 
-![Dashboard Preview](https://i.imgur.com/placeholder.png)
+🔗 **Live Demo:** https://email-agent-xi-drab.vercel.app
 
 ---
 
@@ -11,6 +11,7 @@ An AI-powered email agent that reads your Gmail, categorizes emails, drafts prof
 - **Reads** unread emails from Gmail via IMAP
 - **Analyzes** each email using Groq (LLaMA 3.3 70B) — category, priority, sentiment, summary
 - **Drafts** a professional reply signed with your name
+- **Composes** personalized cold emails with one click using LLaMA 3.3
 - **Logs** everything to a local CSV file
 - **Dashboard** to review, edit, approve, or reject drafts before sending
 - **Auto-runs** every 5 minutes in the background
@@ -49,8 +50,8 @@ email-agent/
 
 ### 1. Clone the repo
 ```bash
-git clone https://github.com/YOUR_USERNAME/email-agent.git
-cd email-agent
+git clone https://github.com/ayush-s-tomar/Email-agent.git
+cd Email-agent
 ```
 
 ### 2. Get your free API keys
@@ -78,7 +79,7 @@ GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx
 GMAIL_ADDRESS=you@gmail.com
 GMAIL_APP_PASS=abcd efgh ijkl mnop
 YOUR_NAME=Your Full Name
-YOUR_ROLE=AI Developer
+YOUR_ROLE=Freelance AI Developer
 LOG_FILE=email_log.csv
 POLL_INTERVAL=5
 ```
@@ -127,10 +128,10 @@ Gmail Inbox (IMAP)
 |----------|-------------|
 | 📈 Lead | Potential job/business opportunity |
 | 🤝 Client | Existing client communication |
-| ⚙ Support | Help or technical requests |
-| ≡ Newsletter | Newsletters and subscriptions |
-| ✕ Spam | Spam or unwanted email |
-| ◉ Other | Everything else |
+| 🛠️ Support | Help or technical requests |
+| 📰 Newsletter | Newsletters and subscriptions |
+| 🚫 Spam | Spam or unwanted email |
+| 📬 Other | Everything else |
 
 ---
 
@@ -145,21 +146,28 @@ Gmail Inbox (IMAP)
 ## 🧠 Interview Talking Points
 
 **"What does this project do?"**
-> It's an AI agent that automates email triage. It connects to Gmail via IMAP, sends each unread email to LLaMA 3 through Groq's API for analysis, gets back structured JSON with category/priority/summary/draft reply, and surfaces everything on a React dashboard where I can approve replies with one click.
+> It's an AI agent that automates email triage. It connects to Gmail via IMAP, sends each unread email to LLaMA 3.3 through Groq's API for analysis, gets back structured JSON with category/priority/summary/draft reply, and surfaces everything on a React dashboard where I can approve replies with one click.
 
 **"Why Groq instead of OpenAI?"**
-> Groq has a free tier with no rate limits for my use case, and their inference speed is significantly faster — ideal for batch processing emails. The model quality on LLaMA 3.3 70B is more than sufficient for structured classification tasks.
+> Groq has a completely free tier with no credit card required, and their inference speed is significantly faster — ideal for batch processing emails. LLaMA 3.3 70B is more than sufficient for structured classification tasks.
+
+**"Why IMAP instead of Gmail API?"**
+> IMAP works with just a Gmail App Password — no Google Cloud project, no OAuth consent screen, no credentials.json. It's simpler to set up and easier for anyone to replicate from the README.
 
 **"How does the backend work?"**
 > FastAPI serves 6 REST endpoints. An APScheduler job runs `run_agent_cycle()` every 5 minutes automatically. Emails are stored in an in-memory dict keyed by IMAP UID, and logged to CSV for persistence across dashboard reloads.
+
+**"What is the cold email composer?"**
+> It's a built-in feature where you enter a recipient's name, company, and target role — LLaMA 3.3 generates a personalized 80-word cold email instantly. This is literally the tool I use to send outreach emails to recruiters.
 
 ---
 
 ## 📌 Roadmap
 
-- [ ] Deploy backend to Railway/Render
-- [ ] Deploy frontend to Vercel
-- [ ] Add email threading (reply-to-reply)
+- [x] Deploy frontend to Vercel
+- [x] Cold email composer with LLaMA 3.3
+- [ ] Persistent storage with SQLite
+- [ ] Email threading (reply-to-reply)
 - [ ] Slack/WhatsApp notification on high-priority emails
 - [ ] Multi-account support
 
@@ -168,9 +176,9 @@ Gmail Inbox (IMAP)
 ## 👤 Author
 
 **Ayush Singh Tomar**
-- GitHub: [@YOUR_USERNAME](https://github.com/YOUR_USERNAME)
-- LinkedIn: [linkedin.com/in/YOUR_PROFILE](https://linkedin.com/in/YOUR_PROFILE)
+- GitHub: [@ayush-s-tomar](https://github.com/ayush-s-tomar)
+- LinkedIn: [linkedin.com/in/ayush-singh-tomar-4151b0282](https://linkedin.com/in/ayush-singh-tomar-4151b0282)
 
 ---
 
-*Built as part of my AI Developer portfolio. This is the exact tool I use for managing recruiter outreach during my job search.*
+*Built as part of my AI Developer portfolio. This is the exact tool I use for managing recruiter and client outreach.*
