@@ -4,6 +4,7 @@ No Google Cloud. No OAuth. Just Gmail App Password + Groq API (free).
 Now with SQLite persistence — emails survive server restarts.
 Now with email threading — replies land in the same Gmail thread.
 Now with tone selector — regenerate drafts as Professional / Friendly / Concise.
+Now with Slack alerts — instant notifications for high-priority and lead emails.
 
 Author: Ayush Singh Tomar
 """
@@ -16,6 +17,7 @@ import json
 import time
 import logging
 import sqlite3
+import urllib.request
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -38,6 +40,7 @@ GMAIL_APP_PASS = os.environ["GMAIL_APP_PASS"]
 YOUR_NAME      = os.environ.get("YOUR_NAME", "Your Name")
 YOUR_ROLE      = os.environ.get("YOUR_ROLE", "Freelance AI Developer")
 DB_FILE        = os.environ.get("DB_FILE", "email_agent.db")
+SLACK_WEBHOOK  = os.environ.get("SLACK_WEBHOOK", "")
 
 # ── Groq client ───────────────────────────────────────────────────────────────
 groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
@@ -209,6 +212,67 @@ def get_db_stats() -> dict:
     }
 
 
+# ── Slack alerts ──────────────────────────────────────────────────────────────
+
+def send_slack_alert(email: dict, analysis: dict) -> None:
+    if not SLACK_WEBHOOK:
+        return
+    try:
+        cat     = analysis.get("category", "other")
+        pri     = analysis.get("priority", "low")
+        summary = analysis.get("summary", "")
+        conf    = int(float(analysis.get("confidence", 0)) * 100)
+
+        icon = "🔴" if pri == "high" else "🟡"
+        cat_icon = "↗" if cat == "lead" else "◈"
+
+        payload = {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"{icon} {pri.upper()} priority {cat} detected"
+                    }
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": f"*From:*\n{email.get('from', '')}"},
+                        {"type": "mrkdwn", "text": f"*Category:*\n{cat_icon} {cat}"},
+                        {"type": "mrkdwn", "text": f"*Subject:*\n{email.get('subject', '')}"},
+                        {"type": "mrkdwn", "text": f"*Confidence:*\n{conf}%"},
+                    ]
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Summary:*\n{summary}"}
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Open Dashboard"},
+                            "url": "https://email-agent-xi-drab.vercel.app",
+                            "style": "primary"
+                        }
+                    ]
+                }
+            ]
+        }
+
+        req = urllib.request.Request(
+            SLACK_WEBHOOK,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5)
+        logger.info(f"Slack alert sent for '{email.get('subject', '')[:50]}'")
+    except Exception as e:
+        logger.warning(f"Slack alert failed: {e}")
+
+
 # ── Gmail helpers ─────────────────────────────────────────────────────────────
 
 def connect_imap() -> imaplib.IMAP4_SSL:
@@ -368,10 +432,8 @@ Rules:
             messages=[{"role": "user", "content": prompt}]
         )
         new_draft = response.choices[0].message.content.strip()
-
         PROCESSED[email_id]["analysis"]["draft_reply"] = new_draft
         update_db_draft(email_id, new_draft)
-
         logger.info(f"Regenerated draft for '{email['subject'][:50]}' -> tone: {tone}")
         return new_draft
 
@@ -436,6 +498,10 @@ def run_agent_cycle() -> list:
         analysis = analyze_email(email)
         save_to_db(email, analysis, status="pending")
         mark_as_read(email["id"])
+
+        # Fire Slack alert for high-priority or lead emails
+        if analysis.get("priority") == "high" or analysis.get("category") == "lead":
+            send_slack_alert(email, analysis)
 
         PROCESSED[email["id"]] = {
             "email":    email,
