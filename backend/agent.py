@@ -1,8 +1,10 @@
 """
 AI Email Automation Agent — Free IMAP/SMTP + Groq version
 No Google Cloud. No OAuth. Just Gmail App Password + Groq API (free).
+
 Now with SQLite persistence — emails survive server restarts.
 Now with email threading — replies land in the same Gmail thread.
+Now with thread grouping — related emails are grouped by conversation.
 Now with tone selector — regenerate drafts as Professional / Friendly / Concise.
 Now with Slack alerts — instant notifications for high-priority and lead emails.
 
@@ -10,6 +12,7 @@ Author: Ayush Singh Tomar
 """
 
 import os
+import re
 import imaplib
 import smtplib
 import email as emaillib
@@ -18,6 +21,7 @@ import time
 import logging
 import sqlite3
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -44,12 +48,16 @@ SLACK_WEBHOOK  = os.environ.get("SLACK_WEBHOOK", "")
 
 # ── Groq client ───────────────────────────────────────────────────────────────
 groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 IMAP_HOST  = "imap.gmail.com"
 SMTP_HOST  = "smtp.gmail.com"
 SMTP_PORT  = 587
 CATEGORIES = ["lead", "client", "support", "newsletter", "spam", "other"]
+
+# Regex to strip Re:/Fwd:/FW: prefixes for thread key computation
+_REPLY_PREFIX_RE = re.compile(r'^(re|fwd?|fw)\s*:\s*', re.IGNORECASE)
 
 TONE_INSTRUCTIONS = {
     "professional": (
@@ -70,10 +78,41 @@ TONE_INSTRUCTIONS = {
 PROCESSED: dict[str, dict] = {}
 
 
+# ── Thread key ────────────────────────────────────────────────────────────────
+
+def compute_thread_key(subject: str) -> str:
+    """
+    Strip Re:/Fwd: prefixes and normalise case so that
+    'Re: SQL update check' and 'SQL update check' map to the same thread.
+    """
+    s = subject.strip()
+    while True:
+        cleaned = _REPLY_PREFIX_RE.sub("", s).strip()
+        if cleaned == s:
+            break
+        s = cleaned
+    return s.lower() or "untitled"
+
+
 # ── SQLite setup ──────────────────────────────────────────────────────────────
 
+@contextmanager
+def get_db():
+    """Single place that owns connection settings (WAL = safer concurrent reads/writes)."""
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def init_db() -> None:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS emails (
                 email_id        TEXT PRIMARY KEY,
@@ -85,6 +124,7 @@ def init_db() -> None:
                 body            TEXT,
                 message_id      TEXT,
                 references_hdr  TEXT,
+                thread_key      TEXT,
                 category        TEXT,
                 priority        TEXT,
                 sentiment       TEXT,
@@ -96,64 +136,89 @@ def init_db() -> None:
                 status          TEXT DEFAULT 'pending'
             )
         """)
-        for col, coltype in [("message_id", "TEXT"), ("references_hdr", "TEXT")]:
+        # Add columns that may not exist in older DB files
+        for col, coltype in [
+            ("message_id",     "TEXT"),
+            ("references_hdr", "TEXT"),
+            ("thread_key",     "TEXT"),
+        ]:
             try:
                 conn.execute(f"ALTER TABLE emails ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
-                pass
-        conn.commit()
-    logger.info("SQLite DB ready.")
+                pass  # Column already exists
+
+        # Indexes — dashboard filters/sorts by these constantly as the table grows
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_status     ON emails(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_priority   ON emails(priority)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_category   ON emails(category)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp  ON emails(timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_thread_key ON emails(thread_key)")
+
+    logger.info("SQLite DB ready (WAL mode, indexes applied).")
 
 
-def save_to_db(email: dict, analysis: dict, status: str = "pending") -> None:
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO emails VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+def save_to_db(email: dict, analysis: dict, status: str = "pending") -> bool:
+    try:
+        with get_db() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO emails VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+            """, (
+                email["id"],
+                datetime.utcnow().isoformat(),
+                email.get("from", ""),
+                email.get("to", ""),
+                email.get("subject", ""),
+                email.get("date", ""),
+                email.get("body", "")[:3000],
+                email.get("message_id", ""),
+                email.get("references", ""),
+                email.get("thread_key", ""),
+                analysis.get("category", "other"),
+                analysis.get("priority", "low"),
+                analysis.get("sentiment", "neutral"),
+                1 if analysis.get("action_required") else 0,
+                analysis.get("summary", ""),
+                analysis.get("key_info", ""),
+                analysis.get("draft_reply", ""),
+                float(analysis.get("confidence", 0.0)),
+                status,
+            ))
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"save_to_db failed for '{email.get('id')}': {e}")
+        return False
+
+
+def update_db_status(email_id: str, status: str) -> bool:
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE emails SET status = ? WHERE email_id = ?",
+                (status, email_id)
             )
-        """, (
-            email["id"],
-            datetime.utcnow().isoformat(),
-            email.get("from", ""),
-            email.get("to", ""),
-            email.get("subject", ""),
-            email.get("date", ""),
-            email.get("body", "")[:3000],
-            email.get("message_id", ""),
-            email.get("references", ""),
-            analysis.get("category", "other"),
-            analysis.get("priority", "low"),
-            analysis.get("sentiment", "neutral"),
-            1 if analysis.get("action_required") else 0,
-            analysis.get("summary", ""),
-            analysis.get("key_info", ""),
-            analysis.get("draft_reply", ""),
-            float(analysis.get("confidence", 0.0)),
-            status,
-        ))
-        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"update_db_status failed for '{email_id}': {e}")
+        return False
 
 
-def update_db_status(email_id: str, status: str) -> None:
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute(
-            "UPDATE emails SET status = ? WHERE email_id = ?",
-            (status, email_id)
-        )
-        conn.commit()
-
-
-def update_db_draft(email_id: str, draft: str) -> None:
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute(
-            "UPDATE emails SET draft_reply = ? WHERE email_id = ?",
-            (draft, email_id)
-        )
-        conn.commit()
+def update_db_draft(email_id: str, draft: str) -> bool:
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE emails SET draft_reply = ? WHERE email_id = ?",
+                (draft, email_id)
+            )
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"update_db_draft failed for '{email_id}': {e}")
+        return False
 
 
 def load_all_from_db() -> list:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_db() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM emails ORDER BY timestamp DESC"
@@ -174,6 +239,7 @@ def load_all_from_db() -> list:
                 "body":       row["body"],
                 "message_id": row["message_id"] or "",
                 "references": row["references_hdr"] or "",
+                "thread_key": row["thread_key"] or compute_thread_key(row["subject"] or ""),
             },
             "analysis": {
                 "email_id":        email_id,
@@ -195,13 +261,16 @@ def load_all_from_db() -> list:
 
 
 def get_db_stats() -> dict:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_db() as conn:
         total    = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
         pending  = conn.execute("SELECT COUNT(*) FROM emails WHERE status='pending'").fetchone()[0]
         sent     = conn.execute("SELECT COUNT(*) FROM emails WHERE status='sent'").fetchone()[0]
         rejected = conn.execute("SELECT COUNT(*) FROM emails WHERE status='rejected'").fetchone()[0]
         leads    = conn.execute("SELECT COUNT(*) FROM emails WHERE category='lead'").fetchone()[0]
         high_pri = conn.execute("SELECT COUNT(*) FROM emails WHERE priority='high'").fetchone()[0]
+        threads  = conn.execute(
+            "SELECT COUNT(DISTINCT thread_key) FROM emails WHERE thread_key IS NOT NULL AND thread_key != ''"
+        ).fetchone()[0]
     return {
         "total":         total,
         "pending":       pending,
@@ -209,6 +278,7 @@ def get_db_stats() -> dict:
         "rejected":      rejected,
         "leads":         leads,
         "high_priority": high_pri,
+        "threads":       threads,
     }
 
 
@@ -223,17 +293,14 @@ def send_slack_alert(email: dict, analysis: dict) -> None:
         summary = analysis.get("summary", "")
         conf    = int(float(analysis.get("confidence", 0)) * 100)
 
-        icon = "🔴" if pri == "high" else "🟡"
+        icon     = "🔴" if pri == "high" else "🟡"
         cat_icon = "↗" if cat == "lead" else "◈"
 
         payload = {
             "blocks": [
                 {
                     "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": f"{icon} {pri.upper()} priority {cat} detected"
-                    }
+                    "text": {"type": "plain_text", "text": f"{icon} {pri.upper()} priority {cat} detected"}
                 },
                 {
                     "type": "section",
@@ -250,14 +317,12 @@ def send_slack_alert(email: dict, analysis: dict) -> None:
                 },
                 {
                     "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Open Dashboard"},
-                            "url": "https://email-agent-xi-drab.vercel.app",
-                            "style": "primary"
-                        }
-                    ]
+                    "elements": [{
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Open Dashboard"},
+                        "url": "https://email-agent-xi-drab.vercel.app",
+                        "style": "primary"
+                    }]
                 }
             ]
         }
@@ -303,16 +368,18 @@ def fetch_unread_emails(max_results: int = 10) -> list:
         _, msg_data = mail.fetch(uid, "(RFC822)")
         raw = msg_data[0][1]
         msg = emaillib.message_from_bytes(raw)
-        body = _extract_body(msg)
+        body    = _extract_body(msg)
+        subject = decode_str(msg.get("Subject", "(no subject)"))
         emails.append({
             "id":         uid.decode(),
             "from":       decode_str(msg.get("From", "")),
             "to":         decode_str(msg.get("To", "")),
-            "subject":    decode_str(msg.get("Subject", "(no subject)")),
+            "subject":    subject,
             "date":       msg.get("Date", ""),
             "body":       body[:3000],
             "message_id": msg.get("Message-ID", ""),
             "references": msg.get("References", ""),
+            "thread_key": compute_thread_key(subject),
         })
 
     mail.logout()
@@ -351,6 +418,7 @@ def send_email(
     msg["To"]      = to
     msg["Subject"] = subject
 
+    # Threading headers — these make Gmail group the reply into the original thread
     if message_id:
         msg["In-Reply-To"] = message_id
         msg["References"]  = f"{references or ''} {message_id}".strip()
@@ -374,7 +442,7 @@ def analyze_email(email: dict, retries: int = 3) -> dict:
     for attempt in range(1, retries + 1):
         try:
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=GROQ_MODEL,
                 messages=[{"role": "user", "content": prompt}]
             )
             raw = response.choices[0].message.content.strip()
@@ -428,7 +496,7 @@ Rules:
 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}]
         )
         new_draft = response.choices[0].message.content.strip()
@@ -496,7 +564,10 @@ def run_agent_cycle() -> list:
             continue
 
         analysis = analyze_email(email)
-        save_to_db(email, analysis, status="pending")
+        if not save_to_db(email, analysis, status="pending"):
+            logger.error(f"Skipping '{email['subject'][:50]}' — DB write failed, will retry next cycle.")
+            continue
+
         mark_as_read(email["id"])
 
         # Fire Slack alert for high-priority or lead emails

@@ -52,6 +52,32 @@ function confidenceStyle(score) {
   return { pct, color };
 }
 
+// ── Thread grouping ────────────────────────────────────────────────────────
+// Groups emails by thread_key; falls back to normalising the subject client-side
+// for any older records that pre-date the thread_key DB column.
+function normaliseSubject(subject) {
+  return (subject || "").replace(/^(re|fwd?|fw)\s*:\s*/i, "").trim().toLowerCase() || "untitled";
+}
+
+function groupByThread(emails) {
+  const map = new Map();
+  emails.forEach(item => {
+    const key = item.email.thread_key || normaliseSubject(item.email.subject);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(item);
+  });
+  // Sort each thread oldest-first (so the conversation reads top-to-bottom)
+  map.forEach(group => group.sort((a, b) => new Date(a.email.date) - new Date(b.email.date)));
+  // Return threads sorted by the most-recent message in each thread (newest thread first)
+  return [...map.entries()]
+    .sort((a, b) => {
+      const latestA = Math.max(...a[1].map(i => new Date(i.email.date)));
+      const latestB = Math.max(...b[1].map(i => new Date(i.email.date)));
+      return latestB - latestA;
+    })
+    .map(([key, items]) => ({ key, items }));
+}
+
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -71,7 +97,6 @@ const css = `
   .run-btn:hover:not(:disabled) { background: #2fffc0; transform: translateY(-1px); box-shadow: 0 4px 20px #0ff2b240; }
   .run-btn:disabled { background: #ffffff15; color: #ffffff40; cursor: not-allowed; transform: none; box-shadow: none; }
 
-  /* ── Tab switcher ── */
   .tab-group { display: flex; gap: 2px; background: #ffffff08; border-radius: 7px; padding: 3px; }
   .tab-btn { padding: 5px 16px; border-radius: 5px; border: none; background: transparent; color: #ffffff40; font-size: 12px; font-family: 'DM Mono', monospace; letter-spacing: 0.06em; cursor: pointer; transition: all 0.15s; }
   .tab-btn.active { background: #ffffff12; color: #fff; }
@@ -91,6 +116,22 @@ const css = `
   .filter-btn { padding: 5px 14px; border-radius: 99px; border: 1px solid #ffffff15; background: transparent; color: #ffffff50; font-size: 12px; font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all 0.15s; text-transform: capitalize; }
   .filter-btn:hover { border-color: #ffffff30; color: #ffffff80; }
   .filter-btn.active { border-color: #0ff2b2; color: #0ff2b2; background: #0ff2b210; }
+
+  /* ── Thread card ── */
+  .thread-wrapper { margin-bottom: 16px; }
+  .thread-header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: #ffffff04; border: 1px solid #ffffff0a; border-radius: 10px 10px 0 0; cursor: pointer; transition: background 0.15s; user-select: none; }
+  .thread-header:hover { background: #ffffff08; }
+  .thread-header.collapsed { border-radius: 10px; }
+  .thread-count-badge { font-family: 'DM Mono', monospace; font-size: 9px; padding: 2px 7px; border-radius: 99px; background: #ffffff10; color: #ffffff40; letter-spacing: 0.08em; flex-shrink: 0; }
+  .thread-subject { font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 600; color: #cbd5e1; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .thread-chevron { font-family: 'DM Mono', monospace; font-size: 10px; color: #ffffff25; transition: transform 0.2s; flex-shrink: 0; }
+  .thread-chevron.open { transform: rotate(90deg); }
+  .thread-pending-dot { width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 6px #f59e0b80; flex-shrink: 0; }
+  .thread-body { border: 1px solid #ffffff0a; border-top: none; border-radius: 0 0 10px 10px; overflow: hidden; }
+  .thread-body .email-card { border-radius: 0; border: none; border-bottom: 1px solid #ffffff06; margin-bottom: 0; }
+  .thread-body .email-card:last-child { border-bottom: none; }
+  /* Indent non-first emails slightly to imply conversation depth */
+  .thread-body .email-card.thread-reply { border-left: 2px solid #ffffff08; }
 
   .email-card { background: #0d1117; border: 1px solid #ffffff0d; border-radius: 12px; padding: 20px 22px; margin-bottom: 12px; transition: border-color 0.2s; animation: slideIn 0.25s ease forwards; }
   @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -179,7 +220,7 @@ const css = `
   .analytics-stat .stat-value { font-family: 'DM Mono', monospace; font-size: 22px; font-weight: 700; color: #fff; }
 `;
 
-// ── Custom tooltip for charts ──────────────────────────────────────────────
+// ── Custom tooltip ─────────────────────────────────────────────────────────
 function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const { name, value, color } = payload[0];
@@ -202,22 +243,21 @@ function AnalyticsTab({ emails, stats }) {
     );
   }
 
-  // Build category counts
   const catCounts = {};
   const priCounts = { high: 0, medium: 0, low: 0 };
   const sentCounts = { positive: 0, neutral: 0, negative: 0 };
 
   emails.forEach(({ analysis }) => {
-    const cat = analysis?.category || "other";
-    catCounts[cat] = (catCounts[cat] || 0) + 1;
-    const pri = analysis?.priority || "low";
-    priCounts[pri] = (priCounts[pri] || 0) + 1;
+    const cat  = analysis?.category  || "other";
+    const pri  = analysis?.priority  || "low";
     const sent = analysis?.sentiment || "neutral";
+    catCounts[cat]   = (catCounts[cat]   || 0) + 1;
+    priCounts[pri]   = (priCounts[pri]   || 0) + 1;
     sentCounts[sent] = (sentCounts[sent] || 0) + 1;
   });
 
-  const catData = Object.entries(catCounts).map(([name, value]) => ({ name, value, color: CATEGORY_HEX[name] || "#4b5563" }));
-  const priData = [
+  const catData  = Object.entries(catCounts).map(([name, value]) => ({ name, value, color: CATEGORY_HEX[name] || "#4b5563" }));
+  const priData  = [
     { name: "High",   value: priCounts.high,   color: "#ef4444" },
     { name: "Medium", value: priCounts.medium, color: "#f59e0b" },
     { name: "Low",    value: priCounts.low,    color: "#22c55e" },
@@ -226,20 +266,13 @@ function AnalyticsTab({ emails, stats }) {
     .filter(([, v]) => v > 0)
     .map(([name, value]) => ({ name, value, color: SENTIMENT_HEX[name] || "#60a5fa" }));
 
-  const total = emails.length;
-  const maxCat = Math.max(...catData.map(d => d.value), 1);
-
-  // Avg confidence
-  const avgConf = Math.round(
-    emails.reduce((sum, { analysis }) => sum + (analysis?.confidence || 0), 0) / total * 100
-  );
-
-  // Action required count
+  const total   = emails.length;
+  const maxCat  = Math.max(...catData.map(d => d.value), 1);
+  const avgConf = Math.round(emails.reduce((s, { analysis }) => s + (analysis?.confidence || 0), 0) / total * 100);
   const actionCount = emails.filter(({ analysis }) => analysis?.action_required).length;
 
   return (
     <div>
-      {/* Top stat strip */}
       <div className="analytics-stat-row">
         <div className="analytics-stat">
           <div className="stat-label">Avg Confidence</div>
@@ -256,14 +289,12 @@ function AnalyticsTab({ emails, stats }) {
       </div>
 
       <div className="analytics-grid">
-
-        {/* Category donut */}
         <div className="chart-card">
           <div className="chart-title">By Category</div>
           <ResponsiveContainer width="100%" height={160}>
             <PieChart>
               <Pie data={catData} cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={3} dataKey="value">
-                {catData.map((entry, i) => <Cell key={i} fill={entry.color} opacity={0.85} />)}
+                {catData.map((e, i) => <Cell key={i} fill={e.color} opacity={0.85} />)}
               </Pie>
               <Tooltip content={<CustomTooltip />} />
             </PieChart>
@@ -273,22 +304,19 @@ function AnalyticsTab({ emails, stats }) {
               <div key={name} className="legend-row">
                 <div className="legend-dot" style={{ background: color }} />
                 <div className="legend-label">{name}</div>
-                <div className="legend-bar-bg">
-                  <div className="legend-bar-fill" style={{ width: `${(value / maxCat) * 100}%`, background: color }} />
-                </div>
+                <div className="legend-bar-bg"><div className="legend-bar-fill" style={{ width: `${(value / maxCat) * 100}%`, background: color }} /></div>
                 <div className="legend-value">{value}</div>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Sentiment donut */}
         <div className="chart-card">
           <div className="chart-title">By Sentiment</div>
           <ResponsiveContainer width="100%" height={160}>
             <PieChart>
               <Pie data={sentData} cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={3} dataKey="value">
-                {sentData.map((entry, i) => <Cell key={i} fill={entry.color} opacity={0.85} />)}
+                {sentData.map((e, i) => <Cell key={i} fill={e.color} opacity={0.85} />)}
               </Pie>
               <Tooltip content={<CustomTooltip />} />
             </PieChart>
@@ -298,16 +326,13 @@ function AnalyticsTab({ emails, stats }) {
               <div key={name} className="legend-row">
                 <div className="legend-dot" style={{ background: color }} />
                 <div className="legend-label">{name}</div>
-                <div className="legend-bar-bg">
-                  <div className="legend-bar-fill" style={{ width: `${(value / total) * 100}%`, background: color }} />
-                </div>
+                <div className="legend-bar-bg"><div className="legend-bar-fill" style={{ width: `${(value / total) * 100}%`, background: color }} /></div>
                 <div className="legend-value">{value}</div>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Priority bar chart — full width */}
         <div className="chart-card full-width">
           <div className="chart-title">By Priority</div>
           <ResponsiveContainer width="100%" height={120}>
@@ -317,13 +342,12 @@ function AnalyticsTab({ emails, stats }) {
               <YAxis tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff20" }} axisLine={false} tickLine={false} allowDecimals={false} />
               <Tooltip content={<CustomTooltip />} cursor={{ fill: "#ffffff05" }} />
               <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                {priData.map((entry, i) => <Cell key={i} fill={entry.color} fillOpacity={0.8} />)}
+                {priData.map((e, i) => <Cell key={i} fill={e.color} fillOpacity={0.8} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
 
-        {/* Status breakdown — full width */}
         {stats && (
           <div className="chart-card full-width">
             <div className="chart-title">Status Breakdown</div>
@@ -334,23 +358,21 @@ function AnalyticsTab({ emails, stats }) {
                   { name: "Sent",     value: stats.sent,     color: "#22c55e" },
                   { name: "Rejected", value: stats.rejected, color: "#ef4444" },
                 ]}
-                margin={{ top: 0, right: 0, bottom: 0, left: -20 }}
-                barSize={32}
+                margin={{ top: 0, right: 0, bottom: 0, left: -20 }} barSize={32}
               >
                 <CartesianGrid vertical={false} stroke="#ffffff06" />
                 <XAxis dataKey="name" tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff30" }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff20" }} axisLine={false} tickLine={false} allowDecimals={false} />
                 <Tooltip content={<CustomTooltip />} cursor={{ fill: "#ffffff05" }} />
                 <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                  {[{ color: "#f59e0b" }, { color: "#22c55e" }, { color: "#ef4444" }].map((entry, i) => (
-                    <Cell key={i} fill={entry.color} fillOpacity={0.8} />
+                  {[{ color: "#f59e0b" }, { color: "#22c55e" }, { color: "#ef4444" }].map((e, i) => (
+                    <Cell key={i} fill={e.color} fillOpacity={0.8} />
                   ))}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
         )}
-
       </div>
     </div>
   );
@@ -365,8 +387,7 @@ function ComposeModal({ onClose }) {
 
   async function handleGenerate() {
     if (!form.name || !form.company || !form.role) return;
-    setLoading(true);
-    setResult(null);
+    setLoading(true); setResult(null);
     try {
       const res = await fetch(`${API}/compose`, { method: "POST", headers: HEADERS, body: JSON.stringify(form) });
       setResult(await res.json());
@@ -407,12 +428,12 @@ function ComposeModal({ onClose }) {
 }
 
 // ── Email Card ─────────────────────────────────────────────────────────────
-function EmailCard({ item, onApprove, onReject, onDraftChange }) {
+function EmailCard({ item, onApprove, onReject, onDraftChange, isReply = false }) {
   const { email, analysis, status } = item;
-  const [editing, setEditing]       = useState(false);
-  const [draft, setDraft]           = useState(analysis.draft_reply || "");
-  const [loading, setLoading]       = useState(false);
-  const [activeTone, setActiveTone] = useState(null);
+  const [editing, setEditing]         = useState(false);
+  const [draft, setDraft]             = useState(analysis.draft_reply || "");
+  const [loading, setLoading]         = useState(false);
+  const [activeTone, setActiveTone]   = useState(null);
   const [toneLoading, setToneLoading] = useState(false);
 
   const cat      = analysis.category || "other";
@@ -426,7 +447,7 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
     if (toneLoading) return;
     setToneLoading(true); setActiveTone(tone);
     try {
-      const res = await fetch(`${API}/tone/${email.id}`, { method: "POST", headers: HEADERS, body: JSON.stringify({ tone }) });
+      const res  = await fetch(`${API}/tone/${email.id}`, { method: "POST", headers: HEADERS, body: JSON.stringify({ tone }) });
       const data = await res.json();
       if (data.draft_reply) { setDraft(data.draft_reply); setEditing(false); }
     } catch (e) { console.error(e); }
@@ -435,8 +456,11 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
 
   async function handleApprove() {
     setLoading(true);
-    try { if (editing) await onDraftChange(email.id, draft); await onApprove(email.id); setEditing(false); }
-    catch (e) { console.error(e); }
+    try {
+      if (editing) await onDraftChange(email.id, draft);
+      await onApprove(email.id);
+      setEditing(false);
+    } catch (e) { console.error(e); }
     finally { setLoading(false); }
   }
 
@@ -448,7 +472,7 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
   }
 
   return (
-    <div className={`email-card ${isDone ? "done" : ""}`}>
+    <div className={`email-card ${isDone ? "done" : ""} ${isReply ? "thread-reply" : ""}`}>
       <div className="card-header">
         <div className="cat-icon" style={{ background: catStyle.bg, border: `1px solid ${catStyle.border}20`, color: catStyle.text }}>{CATEGORY_ICONS[cat]}</div>
         <div className="card-meta">
@@ -492,13 +516,69 @@ function EmailCard({ item, onApprove, onReject, onDraftChange }) {
               </div>
             )}
           </div>
-          {editing ? <textarea className="draft-textarea" rows={6} value={draft} onChange={e => setDraft(e.target.value)} /> : <div className="draft-text">{draft}</div>}
+          {editing
+            ? <textarea className="draft-textarea" rows={6} value={draft} onChange={e => setDraft(e.target.value)} />
+            : <div className="draft-text">{draft}</div>
+          }
         </div>
       )}
       {!isDone && (
         <div className="actions">
           <button className="approve-btn" onClick={handleApprove} disabled={loading || !analysis.draft_reply}>{loading ? "Sending…" : "✓ Approve & Send"}</button>
           <button className="reject-btn" onClick={handleReject} disabled={loading}>Reject</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Thread Card ────────────────────────────────────────────────────────────
+// Groups 2+ emails that share the same normalised subject into one collapsible card.
+// Single-email "threads" render directly as an EmailCard.
+function ThreadCard({ threadKey, items, onApprove, onReject, onDraftChange }) {
+  // Default: collapse if all messages are done; expand if anything is pending
+  const hasPending = items.some(i => i.status === "pending");
+  const [open, setOpen] = useState(hasPending);
+
+  if (items.length === 1) {
+    return (
+      <EmailCard
+        item={items[0]}
+        onApprove={onApprove}
+        onReject={onReject}
+        onDraftChange={onDraftChange}
+      />
+    );
+  }
+
+  // Display subject = the non-Re: root (capitalised)
+  const displaySubject = items[0].email.subject
+    .replace(/^(re|fwd?|fw)\s*:\s*/i, "")
+    .trim();
+
+  return (
+    <div className="thread-wrapper">
+      <div
+        className={`thread-header ${open ? "" : "collapsed"}`}
+        onClick={() => setOpen(o => !o)}
+      >
+        {hasPending && <div className="thread-pending-dot" title="Has pending emails" />}
+        <span className="thread-count-badge">{items.length} messages</span>
+        <span className="thread-subject">{displaySubject}</span>
+        <span className={`thread-chevron ${open ? "open" : ""}`}>▶</span>
+      </div>
+      {open && (
+        <div className="thread-body">
+          {items.map((item, idx) => (
+            <EmailCard
+              key={item.email.id}
+              item={item}
+              onApprove={onApprove}
+              onReject={onReject}
+              onDraftChange={onDraftChange}
+              isReply={idx > 0}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -515,7 +595,7 @@ export default function App() {
   const [filter, setFilter]           = useState("all");
   const [lastSync, setLastSync]       = useState(null);
   const [showCompose, setShowCompose] = useState(false);
-  const [activeTab, setActiveTab]     = useState("inbox"); // "inbox" | "analytics"
+  const [activeTab, setActiveTab]     = useState("inbox");
 
   const fetchAll = useCallback(async () => {
     try {
@@ -536,40 +616,34 @@ export default function App() {
     return () => clearInterval(t);
   }, [fetchAll]);
 
-  // Lightweight stats-only fetch, used internally by triggerRun to detect
-  // when a new email has actually landed without re-rendering the whole list.
   async function fetchStatsOnce() {
     try {
       const res = await fetch(`${API}/stats`, { headers: HEADERS });
       return await res.json();
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
 
   async function triggerRun() {
     if (running) return;
-    setRunning(true);
-    setWaking(true);
+    setRunning(true); setWaking(true);
 
-    const MAX_WAIT_MS = 60000;
+    const MAX_WAIT_MS  = 60000;
     const POLL_EVERY_MS = 3000;
-    const startTime = Date.now();
+    const startTime    = Date.now();
 
     try {
-      const before = await fetchStatsOnce();
-      const startTotal = before?.total ?? null;
+      const before      = await fetchStatsOnce();
+      const startTotal  = before?.total ?? null;
 
-      const controller = new AbortController();
-      const kickoffTimeout = setTimeout(() => controller.abort(), 15000);
+      const controller  = new AbortController();
+      const kickTimeout = setTimeout(() => controller.abort(), 15000);
       try {
         await fetch(`${API}/run`, { method: "POST", headers: HEADERS, signal: controller.signal });
       } finally {
-        clearTimeout(kickoffTimeout);
+        clearTimeout(kickTimeout);
         setWaking(false);
       }
 
-      // Poll /stats until a new email actually shows up, or until MAX_WAIT_MS elapses.
       while (Date.now() - startTime < MAX_WAIT_MS) {
         await new Promise(r => setTimeout(r, POLL_EVERY_MS));
         const after = await fetchStatsOnce();
@@ -578,21 +652,30 @@ export default function App() {
     } catch (e) {
       console.error("Run failed:", e);
     } finally {
-      // Guaranteed to run no matter what happened above — this is what
-      // prevents the button from getting permanently stuck on "Running…".
       await fetchAll();
       setRunning(false);
       setWaking(false);
     }
   }
 
-  async function handleApprove(id) { await fetch(`${API}/approve/${id}`, { method: "POST", headers: HEADERS }); fetchAll(); }
-  async function handleReject(id)  { await fetch(`${API}/reject/${id}`,  { method: "POST", headers: HEADERS }); fetchAll(); }
+  async function handleApprove(id) {
+    await fetch(`${API}/approve/${id}`, { method: "POST", headers: HEADERS });
+    fetchAll();
+  }
+  async function handleReject(id) {
+    await fetch(`${API}/reject/${id}`, { method: "POST", headers: HEADERS });
+    fetchAll();
+  }
   async function handleDraftChange(id, draft) {
     await fetch(`${API}/draft/${id}`, { method: "PUT", headers: HEADERS, body: JSON.stringify({ draft_reply: draft }) });
   }
 
-  const filtered = filter === "all" ? emails : emails.filter(e => e.status === filter || e.analysis?.category === filter);
+  // Filter individual emails first, then group into threads
+  const filtered = filter === "all"
+    ? emails
+    : emails.filter(e => e.status === filter || e.analysis?.category === filter);
+
+  const threads = groupByThread(filtered);
 
   return (
     <>
@@ -603,7 +686,7 @@ export default function App() {
         <div className="logo"><div className="logo-dot" />Email Agent</div>
         <div style={{ marginLeft: 16 }}>
           <div className="tab-group">
-            <button className={`tab-btn ${activeTab === "inbox" ? "active" : ""}`} onClick={() => setActiveTab("inbox")}>INBOX</button>
+            <button className={`tab-btn ${activeTab === "inbox"     ? "active" : ""}`} onClick={() => setActiveTab("inbox")}>INBOX</button>
             <button className={`tab-btn ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>ANALYTICS</button>
           </div>
         </div>
@@ -633,11 +716,18 @@ export default function App() {
             </div>
             {loading ? (
               <div className="empty-state"><div className="empty-icon">◌</div><div className="empty-text">Loading emails…</div></div>
-            ) : filtered.length === 0 ? (
+            ) : threads.length === 0 ? (
               <div className="empty-state"><div className="empty-icon">◎</div><div className="empty-text">No emails here · Click Run Now to fetch</div></div>
             ) : (
-              filtered.map(item => (
-                <EmailCard key={item.email.id} item={item} onApprove={handleApprove} onReject={handleReject} onDraftChange={handleDraftChange} />
+              threads.map(({ key, items }) => (
+                <ThreadCard
+                  key={key}
+                  threadKey={key}
+                  items={items}
+                  onApprove={handleApprove}
+                  onReject={handleReject}
+                  onDraftChange={handleDraftChange}
+                />
               ))
             )}
           </>
