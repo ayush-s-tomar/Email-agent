@@ -2,11 +2,12 @@
 AI Email Automation Agent — Free IMAP/SMTP + Groq version
 No Google Cloud. No OAuth. Just Gmail App Password + Groq API (free).
 
-Now with SQLite persistence — emails survive server restarts.
-Now with email threading — replies land in the same Gmail thread.
-Now with thread grouping — related emails are grouped by conversation.
-Now with tone selector — regenerate drafts as Professional / Friendly / Concise.
-Now with Slack alerts — instant notifications for high-priority and lead emails.
+Now with SQLite persistence    — emails survive server restarts.
+Now with email threading       — replies land in the same Gmail thread.
+Now with thread grouping       — related emails are grouped by conversation.
+Now with tone selector         — regenerate drafts as Professional / Friendly / Concise.
+Now with Slack alerts          — instant notifications for high-priority and lead emails.
+Now with configurable alerts   — tune priority threshold and alert categories via .env.
 
 Author: Ayush Singh Tomar
 """
@@ -44,11 +45,32 @@ GMAIL_APP_PASS = os.environ["GMAIL_APP_PASS"]
 YOUR_NAME      = os.environ.get("YOUR_NAME", "Your Name")
 YOUR_ROLE      = os.environ.get("YOUR_ROLE", "Freelance AI Developer")
 DB_FILE        = os.environ.get("DB_FILE", "email_agent.db")
-SLACK_WEBHOOK  = os.environ.get("SLACK_WEBHOOK", "")
+
+# ── Slack config ───────────────────────────────────────────────────────────────
+SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK", "")
+
+# Which priority levels trigger a Slack alert.
+# SLACK_ALERT_PRIORITIES=high          → only high priority (default, least noisy)
+# SLACK_ALERT_PRIORITIES=high,medium   → high and medium
+# SLACK_ALERT_PRIORITIES=high,medium,low → everything (very noisy, not recommended)
+_raw_priorities = os.environ.get("SLACK_ALERT_PRIORITIES", "high")
+SLACK_ALERT_PRIORITIES: set[str] = {p.strip().lower() for p in _raw_priorities.split(",") if p.strip()}
+
+# Which email categories trigger a Slack alert (fires on top of priority check).
+# SLACK_ALERT_CATEGORIES=lead          → only leads (default)
+# SLACK_ALERT_CATEGORIES=lead,client   → leads and client emails
+# SLACK_ALERT_CATEGORIES=              → disable category-based alerts entirely
+_raw_categories = os.environ.get("SLACK_ALERT_CATEGORIES", "lead")
+SLACK_ALERT_CATEGORIES: set[str] = {c.strip().lower() for c in _raw_categories.split(",") if c.strip()}
+
+logger.info(
+    f"Slack alerts active — priorities={SLACK_ALERT_PRIORITIES}, categories={SLACK_ALERT_CATEGORIES}"
+    if SLACK_WEBHOOK else "Slack alerts disabled (no SLACK_WEBHOOK set)"
+)
 
 # ── Groq client ───────────────────────────────────────────────────────────────
 groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL  = "llama-3.3-70b-versatile"
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 IMAP_HOST  = "imap.gmail.com"
@@ -56,7 +78,6 @@ SMTP_HOST  = "smtp.gmail.com"
 SMTP_PORT  = 587
 CATEGORIES = ["lead", "client", "support", "newsletter", "spam", "other"]
 
-# Regex to strip Re:/Fwd:/FW: prefixes for thread key computation
 _REPLY_PREFIX_RE = re.compile(r'^(re|fwd?|fw)\s*:\s*', re.IGNORECASE)
 
 TONE_INSTRUCTIONS = {
@@ -74,17 +95,12 @@ TONE_INSTRUCTIONS = {
     ),
 }
 
-# In-memory cache: email_id -> { email, analysis, status }
 PROCESSED: dict[str, dict] = {}
 
 
 # ── Thread key ────────────────────────────────────────────────────────────────
 
 def compute_thread_key(subject: str) -> str:
-    """
-    Strip Re:/Fwd: prefixes and normalise case so that
-    'Re: SQL update check' and 'SQL update check' map to the same thread.
-    """
     s = subject.strip()
     while True:
         cleaned = _REPLY_PREFIX_RE.sub("", s).strip()
@@ -98,7 +114,6 @@ def compute_thread_key(subject: str) -> str:
 
 @contextmanager
 def get_db():
-    """Single place that owns connection settings (WAL = safer concurrent reads/writes)."""
     conn = sqlite3.connect(DB_FILE, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     try:
@@ -136,7 +151,6 @@ def init_db() -> None:
                 status          TEXT DEFAULT 'pending'
             )
         """)
-        # Add columns that may not exist in older DB files
         for col, coltype in [
             ("message_id",     "TEXT"),
             ("references_hdr", "TEXT"),
@@ -145,9 +159,8 @@ def init_db() -> None:
             try:
                 conn.execute(f"ALTER TABLE emails ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
-                pass  # Column already exists
+                pass
 
-        # Indexes — dashboard filters/sorts by these constantly as the table grows
         conn.execute("CREATE INDEX IF NOT EXISTS idx_status     ON emails(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_priority   ON emails(priority)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_category   ON emails(category)")
@@ -284,23 +297,42 @@ def get_db_stats() -> dict:
 
 # ── Slack alerts ──────────────────────────────────────────────────────────────
 
-def send_slack_alert(email: dict, analysis: dict) -> None:
+def should_alert(analysis: dict) -> bool:
+    """
+    Return True if this email should fire a Slack notification.
+    Matches on EITHER priority OR category — both sets are read from .env
+    so behaviour can be tuned without touching code.
+    """
     if not SLACK_WEBHOOK:
-        return
+        return False
+    priority_match = analysis.get("priority", "").lower() in SLACK_ALERT_PRIORITIES
+    category_match = analysis.get("category", "").lower() in SLACK_ALERT_CATEGORIES
+    return priority_match or category_match
+
+
+def send_slack_alert(email: dict, analysis: dict) -> None:
     try:
         cat     = analysis.get("category", "other")
         pri     = analysis.get("priority", "low")
         summary = analysis.get("summary", "")
         conf    = int(float(analysis.get("confidence", 0)) * 100)
 
-        icon     = "🔴" if pri == "high" else "🟡"
+        pri_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(pri, "⚪")
         cat_icon = "↗" if cat == "lead" else "◈"
+
+        # Build a context line explaining why this alert fired
+        reasons = []
+        if pri in SLACK_ALERT_PRIORITIES:
+            reasons.append(f"priority is {pri}")
+        if cat in SLACK_ALERT_CATEGORIES:
+            reasons.append(f"category is {cat}")
+        reason_text = " · ".join(reasons)
 
         payload = {
             "blocks": [
                 {
                     "type": "header",
-                    "text": {"type": "plain_text", "text": f"{icon} {pri.upper()} priority {cat} detected"}
+                    "text": {"type": "plain_text", "text": f"{pri_icon} {pri.upper()} priority · {cat} email"}
                 },
                 {
                     "type": "section",
@@ -314,6 +346,10 @@ def send_slack_alert(email: dict, analysis: dict) -> None:
                 {
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": f"*Summary:*\n{summary}"}
+                },
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": f"Alerted because: {reason_text}"}]
                 },
                 {
                     "type": "actions",
@@ -418,7 +454,6 @@ def send_email(
     msg["To"]      = to
     msg["Subject"] = subject
 
-    # Threading headers — these make Gmail group the reply into the original thread
     if message_id:
         msg["In-Reply-To"] = message_id
         msg["References"]  = f"{references or ''} {message_id}".strip()
@@ -570,8 +605,8 @@ def run_agent_cycle() -> list:
 
         mark_as_read(email["id"])
 
-        # Fire Slack alert for high-priority or lead emails
-        if analysis.get("priority") == "high" or analysis.get("category") == "lead":
+        # Alert threshold now driven entirely by .env — no hardcoding
+        if should_alert(analysis):
             send_slack_alert(email, analysis)
 
         PROCESSED[email["id"]] = {
