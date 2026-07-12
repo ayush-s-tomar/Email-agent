@@ -5,17 +5,9 @@ import {
 } from "recharts";
 
 const API = "https://email-agent-crxi.onrender.com";
+const HEADERS = { "ngrok-skip-browser-warning": "true", "Content-Type": "application/json" };
 
-const HEADERS = {
-  "ngrok-skip-browser-warning": "true",
-  "Content-Type": "application/json",
-};
-
-const CATEGORY_ICONS = {
-  lead: "↗", client: "◈", support: "⚙",
-  newsletter: "≡", spam: "✕", other: "◉",
-};
-
+const CATEGORY_ICONS = { lead: "↗", client: "◈", support: "⚙", newsletter: "≡", spam: "✕", other: "◉" };
 const CATEGORY_COLOR = {
   lead:       { bg: "#0ff2b210", border: "#0ff2b2", text: "#0ff2b2" },
   client:     { bg: "#3b82f610", border: "#3b82f6", text: "#60a5fa" },
@@ -24,22 +16,14 @@ const CATEGORY_COLOR = {
   spam:       { bg: "#ef444410", border: "#ef4444", text: "#f87171" },
   other:      { bg: "#ffffff08", border: "#ffffff20", text: "#9ca3af" },
 };
-
-const CATEGORY_HEX = {
-  lead: "#0ff2b2", client: "#3b82f6", support: "#f59e0b",
-  newsletter: "#8b5cf6", spam: "#ef4444", other: "#4b5563",
-};
-
-const PRIORITY_DOT = { high: "#ef4444", medium: "#f59e0b", low: "#22c55e" };
-const PRIORITY_HEX = { high: "#ef4444", medium: "#f59e0b", low: "#22c55e" };
+const CATEGORY_HEX  = { lead: "#0ff2b2", client: "#3b82f6", support: "#f59e0b", newsletter: "#8b5cf6", spam: "#ef4444", other: "#4b5563" };
+const PRIORITY_DOT  = { high: "#ef4444", medium: "#f59e0b", low: "#22c55e" };
 const SENTIMENT_HEX = { positive: "#0ff2b2", neutral: "#60a5fa", negative: "#ef4444" };
-
-const STATUS_STYLE = {
+const STATUS_STYLE  = {
   pending:  { label: "Pending",  color: "#f59e0b" },
   sent:     { label: "Sent",     color: "#22c55e" },
   rejected: { label: "Rejected", color: "#ef4444" },
 };
-
 const TONES = [
   { key: "professional", label: "Professional", icon: "◈" },
   { key: "friendly",     label: "Friendly",     icon: "◉" },
@@ -48,13 +32,9 @@ const TONES = [
 
 function confidenceStyle(score) {
   const pct = Math.round((score || 0) * 100);
-  const color = pct >= 80 ? "#0ff2b2" : pct >= 60 ? "#f59e0b" : "#ef4444";
-  return { pct, color };
+  return { pct, color: pct >= 80 ? "#0ff2b2" : pct >= 60 ? "#f59e0b" : "#ef4444" };
 }
 
-// ── Thread grouping ────────────────────────────────────────────────────────
-// Groups emails by thread_key; falls back to normalising the subject client-side
-// for any older records that pre-date the thread_key DB column.
 function normaliseSubject(subject) {
   return (subject || "").replace(/^(re|fwd?|fw)\s*:\s*/i, "").trim().toLowerCase() || "untitled";
 }
@@ -66,16 +46,22 @@ function groupByThread(emails) {
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(item);
   });
-  // Sort each thread oldest-first (so the conversation reads top-to-bottom)
   map.forEach(group => group.sort((a, b) => new Date(a.email.date) - new Date(b.email.date)));
-  // Return threads sorted by the most-recent message in each thread (newest thread first)
   return [...map.entries()]
-    .sort((a, b) => {
-      const latestA = Math.max(...a[1].map(i => new Date(i.email.date)));
-      const latestB = Math.max(...b[1].map(i => new Date(i.email.date)));
-      return latestB - latestA;
-    })
+    .sort((a, b) => Math.max(...b[1].map(i => new Date(i.email.date))) - Math.max(...a[1].map(i => new Date(i.email.date))))
     .map(([key, items]) => ({ key, items }));
+}
+
+// ── Format a UTC ISO string as "X min ago" / "X hr ago" / "X days ago" ──────
+function timeAgo(isoStr) {
+  if (!isoStr) return null;
+  const diffMs = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1)  return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 }
 
 const css = `
@@ -95,12 +81,18 @@ const css = `
   .compose-btn:hover { background: #0ff2b210; border-color: #0ff2b2; }
   .run-btn { padding: 8px 20px; background: #0ff2b2; color: #080a0f; border: none; border-radius: 6px; font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
   .run-btn:hover:not(:disabled) { background: #2fffc0; transform: translateY(-1px); box-shadow: 0 4px 20px #0ff2b240; }
-  .run-btn:disabled { background: #ffffff15; color: #ffffff40; cursor: not-allowed; transform: none; box-shadow: none; }
-
+  .run-btn:disabled { background: #ffffff15; color: #ffffff40; cursor: not-allowed; }
   .tab-group { display: flex; gap: 2px; background: #ffffff08; border-radius: 7px; padding: 3px; }
   .tab-btn { padding: 5px 16px; border-radius: 5px; border: none; background: transparent; color: #ffffff40; font-size: 12px; font-family: 'DM Mono', monospace; letter-spacing: 0.06em; cursor: pointer; transition: all 0.15s; }
   .tab-btn.active { background: #ffffff12; color: #fff; }
-  .tab-btn:hover:not(.active) { color: #ffffff70; }
+
+  /* ── Health strip ── */
+  .health-strip { display: flex; align-items: center; gap: 14px; padding: 7px 32px; background: #ffffff03; border-bottom: 1px solid #ffffff08; font-family: 'DM Mono', monospace; font-size: 10px; flex-wrap: wrap; }
+  .health-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .health-item { display: flex; align-items: center; gap: 5px; color: #ffffff30; }
+  .health-item span { color: #ffffff55; }
+  .health-errors { color: #ef4444; }
+  .health-ok { color: #22c55e; }
 
   .main { max-width: 900px; margin: 0 auto; padding: 32px 24px; }
   .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px; }
@@ -112,12 +104,17 @@ const css = `
   .stat-card.highlight-sent .stat-value { color: #22c55e; }
   .stat-card.highlight-rejected .stat-value { color: #ef4444; }
 
+  .account-row { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .account-label { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.12em; color: #ffffff25; text-transform: uppercase; margin-right: 4px; }
+  .account-btn { padding: 4px 12px; border-radius: 99px; border: 1px solid #ffffff15; background: transparent; color: #ffffff40; font-size: 11px; font-family: 'DM Mono', monospace; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 5px; }
+  .account-btn.active { border-color: #3b82f6; color: #60a5fa; background: #3b82f610; }
+  .account-dot { width: 5px; height: 5px; border-radius: 50%; background: #22c55e; }
+
   .filters { display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap; }
   .filter-btn { padding: 5px 14px; border-radius: 99px; border: 1px solid #ffffff15; background: transparent; color: #ffffff50; font-size: 12px; font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all 0.15s; text-transform: capitalize; }
   .filter-btn:hover { border-color: #ffffff30; color: #ffffff80; }
   .filter-btn.active { border-color: #0ff2b2; color: #0ff2b2; background: #0ff2b210; }
 
-  /* ── Thread card ── */
   .thread-wrapper { margin-bottom: 16px; }
   .thread-header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: #ffffff04; border: 1px solid #ffffff0a; border-radius: 10px 10px 0 0; cursor: pointer; transition: background 0.15s; user-select: none; }
   .thread-header:hover { background: #ffffff08; }
@@ -130,7 +127,6 @@ const css = `
   .thread-body { border: 1px solid #ffffff0a; border-top: none; border-radius: 0 0 10px 10px; overflow: hidden; }
   .thread-body .email-card { border-radius: 0; border: none; border-bottom: 1px solid #ffffff06; margin-bottom: 0; }
   .thread-body .email-card:last-child { border-bottom: none; }
-  /* Indent non-first emails slightly to imply conversation depth */
   .thread-body .email-card.thread-reply { border-left: 2px solid #ffffff08; }
 
   .email-card { background: #0d1117; border: 1px solid #ffffff0d; border-radius: 12px; padding: 20px 22px; margin-bottom: 12px; transition: border-color 0.2s; animation: slideIn 0.25s ease forwards; }
@@ -142,6 +138,7 @@ const css = `
   .card-meta { flex: 1; min-width: 0; }
   .card-subject { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card-from { font-size: 12px; color: #ffffff40; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .card-account { font-family: 'DM Mono', monospace; font-size: 10px; color: #3b82f660; }
   .priority-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
   .badges { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
   .badge { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.1em; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; border: 1px solid; }
@@ -176,8 +173,6 @@ const css = `
   .empty-icon { font-family: 'DM Mono', monospace; font-size: 40px; color: #ffffff15; margin-bottom: 16px; }
   .empty-text { font-size: 14px; color: #ffffff25; font-family: 'DM Mono', monospace; letter-spacing: 0.05em; }
   .date-label { font-family: 'DM Mono', monospace; font-size: 10px; color: #ffffff20; white-space: nowrap; }
-
-  /* ── Compose Modal ── */
   .modal-overlay { position: fixed; inset: 0; background: #000000aa; display: flex; align-items: center; justify-content: center; z-index: 999; padding: 24px; }
   .modal { background: #0d1117; border: 1px solid #ffffff18; border-radius: 16px; width: 100%; max-width: 520px; padding: 28px; }
   .modal-title { font-family: 'Syne', sans-serif; font-size: 17px; font-weight: 700; color: #fff; margin-bottom: 6px; }
@@ -188,21 +183,19 @@ const css = `
   .field input:focus, .field textarea:focus { border-color: #0ff2b250; }
   .field textarea { resize: vertical; min-height: 70px; line-height: 1.5; }
   .modal-actions { display: flex; gap: 8px; margin-top: 20px; }
-  .generate-btn { flex: 1; padding: 11px; background: #0ff2b2; color: #080a0f; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.15s; }
+  .generate-btn { flex: 1; padding: 11px; background: #0ff2b2; color: #080a0f; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; }
   .generate-btn:hover:not(:disabled) { background: #2fffc0; }
   .generate-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .cancel-btn { padding: 11px 20px; background: transparent; color: #ffffff40; border: 1px solid #ffffff15; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.15s; }
+  .cancel-btn { padding: 11px 20px; background: transparent; color: #ffffff40; border: 1px solid #ffffff15; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
   .cancel-btn:hover { color: #ffffff70; border-color: #ffffff30; }
   .result-box { background: #0a1628; border: 1px solid #1e3a5f; border-radius: 8px; padding: 14px; margin-top: 20px; }
   .result-subject { font-size: 11px; color: #ffffff35; font-family: 'DM Mono', monospace; letter-spacing: 0.1em; margin-bottom: 8px; }
   .result-subject span { color: #60a5fa; }
   .result-email { font-size: 12.5px; color: #93c5fd; white-space: pre-wrap; line-height: 1.65; font-family: 'DM Mono', monospace; }
-  .copy-btn { margin-top: 12px; width: 100%; padding: 9px; background: #3b82f610; color: #60a5fa; border: 1px solid #3b82f630; border-radius: 7px; font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.15s; }
+  .copy-btn { margin-top: 12px; width: 100%; padding: 9px; background: #3b82f610; color: #60a5fa; border: 1px solid #3b82f630; border-radius: 7px; font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
   .copy-btn:hover { background: #3b82f620; border-color: #3b82f6; }
   .copy-btn.copied { background: #0ff2b215; color: #0ff2b2; border-color: #0ff2b230; }
   .wake-banner { font-family: 'DM Mono', monospace; font-size: 11px; color: #f59e0b; background: #f59e0b10; border: 1px solid #f59e0b30; border-radius: 6px; padding: 6px 12px; margin-right: 4px; }
-
-  /* ── Analytics tab ── */
   .analytics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 4px; }
   .chart-card { background: #0d1117; border: 1px solid #ffffff0d; border-radius: 12px; padding: 22px 20px; }
   .chart-title { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.15em; color: #ffffff30; text-transform: uppercase; margin-bottom: 20px; }
@@ -213,14 +206,12 @@ const css = `
   .legend-value { font-family: 'DM Mono', monospace; font-size: 11px; color: #ffffff80; }
   .legend-bar-bg { flex: 2; height: 3px; background: #ffffff08; border-radius: 99px; overflow: hidden; }
   .legend-bar-fill { height: 100%; border-radius: 99px; }
-  .no-data { font-family: 'DM Mono', monospace; font-size: 11px; color: #ffffff20; text-align: center; padding: 40px 0; }
   .analytics-stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
   .analytics-stat { background: #ffffff06; border: 1px solid #ffffff0d; border-radius: 10px; padding: 14px 16px; }
   .analytics-stat .stat-label { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.15em; color: #ffffff30; margin-bottom: 6px; text-transform: uppercase; }
   .analytics-stat .stat-value { font-family: 'DM Mono', monospace; font-size: 22px; font-weight: 700; color: #fff; }
 `;
 
-// ── Custom tooltip ─────────────────────────────────────────────────────────
 function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const { name, value, color } = payload[0];
@@ -232,176 +223,57 @@ function CustomTooltip({ active, payload }) {
   );
 }
 
-// ── Analytics Tab ──────────────────────────────────────────────────────────
 function AnalyticsTab({ emails, stats }) {
-  if (!emails.length) {
-    return (
-      <div className="empty-state" style={{ marginTop: 24 }}>
-        <div className="empty-icon">◎</div>
-        <div className="empty-text">No data yet · Run the agent to populate charts</div>
-      </div>
-    );
-  }
-
-  const catCounts = {};
-  const priCounts = { high: 0, medium: 0, low: 0 };
-  const sentCounts = { positive: 0, neutral: 0, negative: 0 };
-
+  if (!emails.length) return (
+    <div className="empty-state" style={{ marginTop: 24 }}>
+      <div className="empty-icon">◎</div>
+      <div className="empty-text">No data yet · Run the agent to populate charts</div>
+    </div>
+  );
+  const catCounts = {}, priCounts = { high: 0, medium: 0, low: 0 }, sentCounts = { positive: 0, neutral: 0, negative: 0 };
   emails.forEach(({ analysis }) => {
-    const cat  = analysis?.category  || "other";
-    const pri  = analysis?.priority  || "low";
-    const sent = analysis?.sentiment || "neutral";
-    catCounts[cat]   = (catCounts[cat]   || 0) + 1;
-    priCounts[pri]   = (priCounts[pri]   || 0) + 1;
-    sentCounts[sent] = (sentCounts[sent] || 0) + 1;
+    const cat = analysis?.category || "other", pri = analysis?.priority || "low", sent = analysis?.sentiment || "neutral";
+    catCounts[cat] = (catCounts[cat] || 0) + 1; priCounts[pri]++; sentCounts[sent]++;
   });
-
-  const catData  = Object.entries(catCounts).map(([name, value]) => ({ name, value, color: CATEGORY_HEX[name] || "#4b5563" }));
-  const priData  = [
-    { name: "High",   value: priCounts.high,   color: "#ef4444" },
-    { name: "Medium", value: priCounts.medium, color: "#f59e0b" },
-    { name: "Low",    value: priCounts.low,    color: "#22c55e" },
-  ].filter(d => d.value > 0);
-  const sentData = Object.entries(sentCounts)
-    .filter(([, v]) => v > 0)
-    .map(([name, value]) => ({ name, value, color: SENTIMENT_HEX[name] || "#60a5fa" }));
-
-  const total   = emails.length;
-  const maxCat  = Math.max(...catData.map(d => d.value), 1);
+  const catData = Object.entries(catCounts).map(([name, value]) => ({ name, value, color: CATEGORY_HEX[name] || "#4b5563" }));
+  const priData = [{ name: "High", value: priCounts.high, color: "#ef4444" }, { name: "Medium", value: priCounts.medium, color: "#f59e0b" }, { name: "Low", value: priCounts.low, color: "#22c55e" }].filter(d => d.value > 0);
+  const sentData = Object.entries(sentCounts).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value, color: SENTIMENT_HEX[name] || "#60a5fa" }));
+  const total = emails.length, maxCat = Math.max(...catData.map(d => d.value), 1);
   const avgConf = Math.round(emails.reduce((s, { analysis }) => s + (analysis?.confidence || 0), 0) / total * 100);
   const actionCount = emails.filter(({ analysis }) => analysis?.action_required).length;
-
   return (
     <div>
       <div className="analytics-stat-row">
-        <div className="analytics-stat">
-          <div className="stat-label">Avg Confidence</div>
-          <div className="stat-value" style={{ color: avgConf >= 80 ? "#0ff2b2" : avgConf >= 60 ? "#f59e0b" : "#ef4444" }}>{avgConf}%</div>
-        </div>
-        <div className="analytics-stat">
-          <div className="stat-label">Action Required</div>
-          <div className="stat-value" style={{ color: "#f59e0b" }}>{actionCount}</div>
-        </div>
-        <div className="analytics-stat">
-          <div className="stat-label">Leads Found</div>
-          <div className="stat-value" style={{ color: "#0ff2b2" }}>{catCounts["lead"] || 0}</div>
-        </div>
+        <div className="analytics-stat"><div className="stat-label">Avg Confidence</div><div className="stat-value" style={{ color: avgConf >= 80 ? "#0ff2b2" : avgConf >= 60 ? "#f59e0b" : "#ef4444" }}>{avgConf}%</div></div>
+        <div className="analytics-stat"><div className="stat-label">Action Required</div><div className="stat-value" style={{ color: "#f59e0b" }}>{actionCount}</div></div>
+        <div className="analytics-stat"><div className="stat-label">Leads Found</div><div className="stat-value" style={{ color: "#0ff2b2" }}>{catCounts["lead"] || 0}</div></div>
       </div>
-
       <div className="analytics-grid">
-        <div className="chart-card">
-          <div className="chart-title">By Category</div>
-          <ResponsiveContainer width="100%" height={160}>
-            <PieChart>
-              <Pie data={catData} cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={3} dataKey="value">
-                {catData.map((e, i) => <Cell key={i} fill={e.color} opacity={0.85} />)}
-              </Pie>
-              <Tooltip content={<CustomTooltip />} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div style={{ marginTop: 12 }}>
-            {catData.map(({ name, value, color }) => (
-              <div key={name} className="legend-row">
-                <div className="legend-dot" style={{ background: color }} />
-                <div className="legend-label">{name}</div>
-                <div className="legend-bar-bg"><div className="legend-bar-fill" style={{ width: `${(value / maxCat) * 100}%`, background: color }} /></div>
-                <div className="legend-value">{value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="chart-card">
-          <div className="chart-title">By Sentiment</div>
-          <ResponsiveContainer width="100%" height={160}>
-            <PieChart>
-              <Pie data={sentData} cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={3} dataKey="value">
-                {sentData.map((e, i) => <Cell key={i} fill={e.color} opacity={0.85} />)}
-              </Pie>
-              <Tooltip content={<CustomTooltip />} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div style={{ marginTop: 12 }}>
-            {sentData.map(({ name, value, color }) => (
-              <div key={name} className="legend-row">
-                <div className="legend-dot" style={{ background: color }} />
-                <div className="legend-label">{name}</div>
-                <div className="legend-bar-bg"><div className="legend-bar-fill" style={{ width: `${(value / total) * 100}%`, background: color }} /></div>
-                <div className="legend-value">{value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="chart-card full-width">
-          <div className="chart-title">By Priority</div>
-          <ResponsiveContainer width="100%" height={120}>
-            <BarChart data={priData} margin={{ top: 0, right: 0, bottom: 0, left: -20 }} barSize={32}>
-              <CartesianGrid vertical={false} stroke="#ffffff06" />
-              <XAxis dataKey="name" tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff30" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff20" }} axisLine={false} tickLine={false} allowDecimals={false} />
-              <Tooltip content={<CustomTooltip />} cursor={{ fill: "#ffffff05" }} />
-              <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                {priData.map((e, i) => <Cell key={i} fill={e.color} fillOpacity={0.8} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        {stats && (
-          <div className="chart-card full-width">
-            <div className="chart-title">Status Breakdown</div>
-            <ResponsiveContainer width="100%" height={120}>
-              <BarChart
-                data={[
-                  { name: "Pending",  value: stats.pending,  color: "#f59e0b" },
-                  { name: "Sent",     value: stats.sent,     color: "#22c55e" },
-                  { name: "Rejected", value: stats.rejected, color: "#ef4444" },
-                ]}
-                margin={{ top: 0, right: 0, bottom: 0, left: -20 }} barSize={32}
-              >
-                <CartesianGrid vertical={false} stroke="#ffffff06" />
-                <XAxis dataKey="name" tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff30" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff20" }} axisLine={false} tickLine={false} allowDecimals={false} />
-                <Tooltip content={<CustomTooltip />} cursor={{ fill: "#ffffff05" }} />
-                <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                  {[{ color: "#f59e0b" }, { color: "#22c55e" }, { color: "#ef4444" }].map((e, i) => (
-                    <Cell key={i} fill={e.color} fillOpacity={0.8} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+        <div className="chart-card"><div className="chart-title">By Category</div><ResponsiveContainer width="100%" height={160}><PieChart><Pie data={catData} cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={3} dataKey="value">{catData.map((e, i) => <Cell key={i} fill={e.color} opacity={0.85} />)}</Pie><Tooltip content={<CustomTooltip />} /></PieChart></ResponsiveContainer><div style={{ marginTop: 12 }}>{catData.map(({ name, value, color }) => (<div key={name} className="legend-row"><div className="legend-dot" style={{ background: color }} /><div className="legend-label">{name}</div><div className="legend-bar-bg"><div className="legend-bar-fill" style={{ width: `${(value / maxCat) * 100}%`, background: color }} /></div><div className="legend-value">{value}</div></div>))}</div></div>
+        <div className="chart-card"><div className="chart-title">By Sentiment</div><ResponsiveContainer width="100%" height={160}><PieChart><Pie data={sentData} cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={3} dataKey="value">{sentData.map((e, i) => <Cell key={i} fill={e.color} opacity={0.85} />)}</Pie><Tooltip content={<CustomTooltip />} /></PieChart></ResponsiveContainer><div style={{ marginTop: 12 }}>{sentData.map(({ name, value, color }) => (<div key={name} className="legend-row"><div className="legend-dot" style={{ background: color }} /><div className="legend-label">{name}</div><div className="legend-bar-bg"><div className="legend-bar-fill" style={{ width: `${(value / total) * 100}%`, background: color }} /></div><div className="legend-value">{value}</div></div>))}</div></div>
+        <div className="chart-card full-width"><div className="chart-title">By Priority</div><ResponsiveContainer width="100%" height={120}><BarChart data={priData} margin={{ top: 0, right: 0, bottom: 0, left: -20 }} barSize={32}><CartesianGrid vertical={false} stroke="#ffffff06" /><XAxis dataKey="name" tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff30" }} axisLine={false} tickLine={false} /><YAxis tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff20" }} axisLine={false} tickLine={false} allowDecimals={false} /><Tooltip content={<CustomTooltip />} cursor={{ fill: "#ffffff05" }} /><Bar dataKey="value" radius={[4, 4, 0, 0]}>{priData.map((e, i) => <Cell key={i} fill={e.color} fillOpacity={0.8} />)}</Bar></BarChart></ResponsiveContainer></div>
+        {stats && <div className="chart-card full-width"><div className="chart-title">Status Breakdown</div><ResponsiveContainer width="100%" height={120}><BarChart data={[{ name: "Pending", value: stats.pending, color: "#f59e0b" }, { name: "Sent", value: stats.sent, color: "#22c55e" }, { name: "Rejected", value: stats.rejected, color: "#ef4444" }]} margin={{ top: 0, right: 0, bottom: 0, left: -20 }} barSize={32}><CartesianGrid vertical={false} stroke="#ffffff06" /><XAxis dataKey="name" tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff30" }} axisLine={false} tickLine={false} /><YAxis tick={{ fontFamily: "'DM Mono', monospace", fontSize: 10, fill: "#ffffff20" }} axisLine={false} tickLine={false} allowDecimals={false} /><Tooltip content={<CustomTooltip />} cursor={{ fill: "#ffffff05" }} /><Bar dataKey="value" radius={[4, 4, 0, 0]}>{[{ color: "#f59e0b" }, { color: "#22c55e" }, { color: "#ef4444" }].map((e, i) => <Cell key={i} fill={e.color} fillOpacity={0.8} />)}</Bar></BarChart></ResponsiveContainer></div>}
       </div>
     </div>
   );
 }
 
-// ── Compose Modal ──────────────────────────────────────────────────────────
 function ComposeModal({ onClose }) {
-  const [form, setForm]       = useState({ name: "", company: "", role: "", context: "" });
-  const [result, setResult]   = useState(null);
+  const [form, setForm] = useState({ name: "", company: "", role: "", context: "" });
+  const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied]   = useState(false);
-
+  const [copied, setCopied] = useState(false);
   async function handleGenerate() {
     if (!form.name || !form.company || !form.role) return;
     setLoading(true); setResult(null);
-    try {
-      const res = await fetch(`${API}/compose`, { method: "POST", headers: HEADERS, body: JSON.stringify(form) });
-      setResult(await res.json());
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    try { const res = await fetch(`${API}/compose`, { method: "POST", headers: HEADERS, body: JSON.stringify(form) }); setResult(await res.json()); }
+    catch (e) { console.error(e); } finally { setLoading(false); }
   }
-
   function handleCopy() {
     if (!result) return;
     navigator.clipboard.writeText(`Subject: ${result.subject}\n\n${result.email}`);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
   }
-
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
@@ -415,62 +287,40 @@ function ComposeModal({ onClose }) {
           <button className="generate-btn" onClick={handleGenerate} disabled={loading || !form.name || !form.company || !form.role}>{loading ? "Generating…" : "⟳ Generate email"}</button>
           <button className="cancel-btn" onClick={onClose}>Cancel</button>
         </div>
-        {result && (
-          <div className="result-box">
-            <div className="result-subject">SUBJECT: <span>{result.subject}</span></div>
-            <div className="result-email">{result.email}</div>
-            <button className={`copy-btn ${copied ? "copied" : ""}`} onClick={handleCopy}>{copied ? "✓ Copied!" : "Copy email + subject"}</button>
-          </div>
-        )}
+        {result && <div className="result-box"><div className="result-subject">SUBJECT: <span>{result.subject}</span></div><div className="result-email">{result.email}</div><button className={`copy-btn ${copied ? "copied" : ""}`} onClick={handleCopy}>{copied ? "✓ Copied!" : "Copy email + subject"}</button></div>}
       </div>
     </div>
   );
 }
 
-// ── Email Card ─────────────────────────────────────────────────────────────
 function EmailCard({ item, onApprove, onReject, onDraftChange, isReply = false }) {
   const { email, analysis, status } = item;
-  const [editing, setEditing]         = useState(false);
-  const [draft, setDraft]             = useState(analysis.draft_reply || "");
-  const [loading, setLoading]         = useState(false);
-  const [activeTone, setActiveTone]   = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(analysis.draft_reply || "");
+  const [loading, setLoading] = useState(false);
+  const [activeTone, setActiveTone] = useState(null);
   const [toneLoading, setToneLoading] = useState(false);
-
-  const cat      = analysis.category || "other";
-  const pri      = analysis.priority || "low";
+  const cat = analysis.category || "other", pri = analysis.priority || "low";
   const catStyle = CATEGORY_COLOR[cat] || CATEGORY_COLOR.other;
-  const isDone   = status === "sent" || status === "rejected";
+  const isDone = status === "sent" || status === "rejected";
   const statusInfo = STATUS_STYLE[status] || STATUS_STYLE.pending;
   const { pct, color: confColor } = confidenceStyle(analysis.confidence);
 
   async function handleTone(tone) {
     if (toneLoading) return;
     setToneLoading(true); setActiveTone(tone);
-    try {
-      const res  = await fetch(`${API}/tone/${email.id}`, { method: "POST", headers: HEADERS, body: JSON.stringify({ tone }) });
-      const data = await res.json();
-      if (data.draft_reply) { setDraft(data.draft_reply); setEditing(false); }
-    } catch (e) { console.error(e); }
-    finally { setToneLoading(false); }
+    try { const res = await fetch(`${API}/tone/${email.id}`, { method: "POST", headers: HEADERS, body: JSON.stringify({ tone }) }); const data = await res.json(); if (data.draft_reply) { setDraft(data.draft_reply); setEditing(false); } }
+    catch (e) { console.error(e); } finally { setToneLoading(false); }
   }
-
   async function handleApprove() {
     setLoading(true);
-    try {
-      if (editing) await onDraftChange(email.id, draft);
-      await onApprove(email.id);
-      setEditing(false);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    try { if (editing) await onDraftChange(email.id, draft); await onApprove(email.id); setEditing(false); }
+    catch (e) { console.error(e); } finally { setLoading(false); }
   }
-
   async function handleReject() {
     setLoading(true);
-    try { await onReject(email.id); }
-    catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    try { await onReject(email.id); } catch (e) { console.error(e); } finally { setLoading(false); }
   }
-
   return (
     <div className={`email-card ${isDone ? "done" : ""} ${isReply ? "thread-reply" : ""}`}>
       <div className="card-header">
@@ -484,130 +334,108 @@ function EmailCard({ item, onApprove, onReject, onDraftChange, isReply = false }
             <span style={{ textTransform: "capitalize", color: catStyle.text }}>{cat}</span>
             <span style={{ color: "#ffffff20" }}>·</span>
             <span>{analysis.sentiment}</span>
+            {email.account_email && <span className="card-account">· {email.account_email}</span>}
           </div>
         </div>
         <div className="badges">
           <span className="confidence-badge" style={{ color: confColor, borderColor: `${confColor}40`, background: `${confColor}10` }} title={`AI confidence: ${pct}%`}>
-            <div className="confidence-bar"><div className="confidence-fill" style={{ width: `${pct}%`, background: confColor }} /></div>
-            {pct}%
+            <div className="confidence-bar"><div className="confidence-fill" style={{ width: `${pct}%`, background: confColor }} /></div>{pct}%
           </span>
           <span className="badge" style={{ color: statusInfo.color, borderColor: `${statusInfo.color}40`, background: `${statusInfo.color}10` }}>{statusInfo.label}</span>
           <span className="date-label">{new Date(email.date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>
         </div>
       </div>
-      <div className="summary-box">
-        <strong>Summary:</strong> {analysis.summary}
-        {analysis.key_info && <div style={{ marginTop: 5 }}><strong>Key info:</strong> {analysis.key_info}</div>}
-      </div>
+      <div className="summary-box"><strong>Summary:</strong> {analysis.summary}{analysis.key_info && <div style={{ marginTop: 5 }}><strong>Key info:</strong> {analysis.key_info}</div>}</div>
       {analysis.draft_reply && (
         <div className="draft-section">
           <div className="draft-header">
             <span className="draft-label">Draft reply</span>
-            {!isDone && (
-              <div className="draft-header-right">
-                <div className="tone-group">
-                  {TONES.map(t => (
-                    <button key={t.key} className={`tone-btn ${activeTone === t.key ? "active" : ""}`} onClick={() => handleTone(t.key)} disabled={toneLoading || loading} title={`Rewrite as ${t.label}`}>
-                      {toneLoading && activeTone === t.key ? <span className="tone-spinning">⟳</span> : t.icon} {t.label}
-                    </button>
-                  ))}
-                </div>
-                <button className="edit-btn" onClick={() => setEditing(!editing)}>{editing ? "Cancel" : "Edit"}</button>
-              </div>
-            )}
+            {!isDone && <div className="draft-header-right"><div className="tone-group">{TONES.map(t => (<button key={t.key} className={`tone-btn ${activeTone === t.key ? "active" : ""}`} onClick={() => handleTone(t.key)} disabled={toneLoading || loading}>{toneLoading && activeTone === t.key ? <span className="tone-spinning">⟳</span> : t.icon} {t.label}</button>))}</div><button className="edit-btn" onClick={() => setEditing(!editing)}>{editing ? "Cancel" : "Edit"}</button></div>}
           </div>
-          {editing
-            ? <textarea className="draft-textarea" rows={6} value={draft} onChange={e => setDraft(e.target.value)} />
-            : <div className="draft-text">{draft}</div>
-          }
+          {editing ? <textarea className="draft-textarea" rows={6} value={draft} onChange={e => setDraft(e.target.value)} /> : <div className="draft-text">{draft}</div>}
         </div>
       )}
-      {!isDone && (
-        <div className="actions">
-          <button className="approve-btn" onClick={handleApprove} disabled={loading || !analysis.draft_reply}>{loading ? "Sending…" : "✓ Approve & Send"}</button>
-          <button className="reject-btn" onClick={handleReject} disabled={loading}>Reject</button>
-        </div>
-      )}
+      {!isDone && <div className="actions"><button className="approve-btn" onClick={handleApprove} disabled={loading || !analysis.draft_reply}>{loading ? "Sending…" : "✓ Approve & Send"}</button><button className="reject-btn" onClick={handleReject} disabled={loading}>Reject</button></div>}
     </div>
   );
 }
 
-// ── Thread Card ────────────────────────────────────────────────────────────
-// Groups 2+ emails that share the same normalised subject into one collapsible card.
-// Single-email "threads" render directly as an EmailCard.
 function ThreadCard({ threadKey, items, onApprove, onReject, onDraftChange }) {
-  // Default: collapse if all messages are done; expand if anything is pending
   const hasPending = items.some(i => i.status === "pending");
   const [open, setOpen] = useState(hasPending);
-
-  if (items.length === 1) {
-    return (
-      <EmailCard
-        item={items[0]}
-        onApprove={onApprove}
-        onReject={onReject}
-        onDraftChange={onDraftChange}
-      />
-    );
-  }
-
-  // Display subject = the non-Re: root (capitalised)
-  const displaySubject = items[0].email.subject
-    .replace(/^(re|fwd?|fw)\s*:\s*/i, "")
-    .trim();
-
+  if (items.length === 1) return <EmailCard item={items[0]} onApprove={onApprove} onReject={onReject} onDraftChange={onDraftChange} />;
+  const displaySubject = items[0].email.subject.replace(/^(re|fwd?|fw)\s*:\s*/i, "").trim();
   return (
     <div className="thread-wrapper">
-      <div
-        className={`thread-header ${open ? "" : "collapsed"}`}
-        onClick={() => setOpen(o => !o)}
-      >
-        {hasPending && <div className="thread-pending-dot" title="Has pending emails" />}
+      <div className={`thread-header ${open ? "" : "collapsed"}`} onClick={() => setOpen(o => !o)}>
+        {hasPending && <div className="thread-pending-dot" />}
         <span className="thread-count-badge">{items.length} messages</span>
         <span className="thread-subject">{displaySubject}</span>
         <span className={`thread-chevron ${open ? "open" : ""}`}>▶</span>
       </div>
-      {open && (
-        <div className="thread-body">
-          {items.map((item, idx) => (
-            <EmailCard
-              key={item.email.id}
-              item={item}
-              onApprove={onApprove}
-              onReject={onReject}
-              onDraftChange={onDraftChange}
-              isReply={idx > 0}
-            />
-          ))}
-        </div>
-      )}
+      {open && <div className="thread-body">{items.map((item, idx) => <EmailCard key={item.email.id} item={item} onApprove={onApprove} onReject={onReject} onDraftChange={onDraftChange} isReply={idx > 0} />)}</div>}
     </div>
   );
 }
 
-// ── App ────────────────────────────────────────────────────────────────────
+// ── Health strip component ─────────────────────────────────────────────────
+function HealthStrip({ health }) {
+  if (!health) return null;
+  const hasErrors = health.errors_last_cycle?.length > 0;
+  const dotColor  = hasErrors ? "#ef4444" : "#22c55e";
+  return (
+    <div className="health-strip">
+      <div className="health-item">
+        <div className="health-dot" style={{ background: dotColor, boxShadow: `0 0 5px ${dotColor}` }} />
+        <span className={hasErrors ? "health-errors" : "health-ok"}>
+          {hasErrors ? `${health.errors_last_cycle.length} error${health.errors_last_cycle.length > 1 ? "s" : ""} last cycle` : "healthy"}
+        </span>
+      </div>
+      {health.last_success && (
+        <div className="health-item">last success <span>{timeAgo(health.last_success)}</span></div>
+      )}
+      {health.last_run && (
+        <div className="health-item">last run <span>{timeAgo(health.last_run)}</span></div>
+      )}
+      <div className="health-item">cycles <span>{health.total_cycles ?? 0}</span></div>
+      <div className="health-item">total errors <span style={{ color: health.total_errors > 0 ? "#f59e0b" : "#ffffff55" }}>{health.total_errors ?? 0}</span></div>
+      {health.accounts > 1 && <div className="health-item">accounts <span>{health.accounts}</span></div>}
+    </div>
+  );
+}
+
 export default function App() {
-  const [emails, setEmails]           = useState([]);
-  const [stats, setStats]             = useState(null);
-  const [loading, setLoading]         = useState(true);
-  const [running, setRunning]         = useState(false);
-  const [waking, setWaking]           = useState(false);
-  const [filter, setFilter]           = useState("all");
-  const [lastSync, setLastSync]       = useState(null);
-  const [showCompose, setShowCompose] = useState(false);
-  const [activeTab, setActiveTab]     = useState("inbox");
+  const [emails, setEmails]               = useState([]);
+  const [stats, setStats]                 = useState(null);
+  const [health, setHealth]               = useState(null);
+  const [accounts, setAccounts]           = useState([]);
+  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [loading, setLoading]             = useState(true);
+  const [running, setRunning]             = useState(false);
+  const [waking, setWaking]               = useState(false);
+  const [filter, setFilter]               = useState("all");
+  const [lastSync, setLastSync]           = useState(null);
+  const [showCompose, setShowCompose]     = useState(false);
+  const [activeTab, setActiveTab]         = useState("inbox");
 
   const fetchAll = useCallback(async () => {
     try {
-      const [eRes, sRes] = await Promise.all([
-        fetch(`${API}/emails`, { headers: HEADERS }),
+      const url = selectedAccount ? `${API}/emails?account=${encodeURIComponent(selectedAccount)}` : `${API}/emails`;
+      const [eRes, sRes, hRes] = await Promise.all([
+        fetch(url,           { headers: HEADERS }),
         fetch(`${API}/stats`,  { headers: HEADERS }),
+        fetch(`${API}/health`, { headers: HEADERS }),
       ]);
       setEmails((await eRes.json()).emails || []);
       setStats(await sRes.json());
+      setHealth(await hRes.json());
       setLastSync(new Date());
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    } catch (e) { console.error(e); } finally { setLoading(false); }
+  }, [selectedAccount]);
+
+  useEffect(() => {
+    fetch(`${API}/accounts`, { headers: HEADERS })
+      .then(r => r.json()).then(d => setAccounts(d.accounts || [])).catch(console.error);
   }, []);
 
   useEffect(() => {
@@ -617,65 +445,38 @@ export default function App() {
   }, [fetchAll]);
 
   async function fetchStatsOnce() {
-    try {
-      const res = await fetch(`${API}/stats`, { headers: HEADERS });
-      return await res.json();
-    } catch { return null; }
+    try { return await (await fetch(`${API}/stats`, { headers: HEADERS })).json(); }
+    catch { return null; }
   }
 
   async function triggerRun() {
     if (running) return;
     setRunning(true); setWaking(true);
-
-    const MAX_WAIT_MS  = 60000;
-    const POLL_EVERY_MS = 3000;
-    const startTime    = Date.now();
-
+    const MAX_WAIT_MS = 60000, POLL_EVERY_MS = 3000, startTime = Date.now();
     try {
-      const before      = await fetchStatsOnce();
-      const startTotal  = before?.total ?? null;
-
-      const controller  = new AbortController();
+      const before = await fetchStatsOnce();
+      const startTotal = before?.total ?? null;
+      const controller = new AbortController();
       const kickTimeout = setTimeout(() => controller.abort(), 15000);
-      try {
-        await fetch(`${API}/run`, { method: "POST", headers: HEADERS, signal: controller.signal });
-      } finally {
-        clearTimeout(kickTimeout);
-        setWaking(false);
-      }
-
+      try { await fetch(`${API}/run`, { method: "POST", headers: HEADERS, signal: controller.signal }); }
+      finally { clearTimeout(kickTimeout); setWaking(false); }
       while (Date.now() - startTime < MAX_WAIT_MS) {
         await new Promise(r => setTimeout(r, POLL_EVERY_MS));
         const after = await fetchStatsOnce();
         if (after && startTotal !== null && after.total > startTotal) break;
       }
-    } catch (e) {
-      console.error("Run failed:", e);
-    } finally {
-      await fetchAll();
-      setRunning(false);
-      setWaking(false);
-    }
+    } catch (e) { console.error("Run failed:", e); }
+    finally { await fetchAll(); setRunning(false); setWaking(false); }
   }
 
-  async function handleApprove(id) {
-    await fetch(`${API}/approve/${id}`, { method: "POST", headers: HEADERS });
-    fetchAll();
-  }
-  async function handleReject(id) {
-    await fetch(`${API}/reject/${id}`, { method: "POST", headers: HEADERS });
-    fetchAll();
-  }
+  async function handleApprove(id) { await fetch(`${API}/approve/${id}`, { method: "POST", headers: HEADERS }); fetchAll(); }
+  async function handleReject(id)  { await fetch(`${API}/reject/${id}`,  { method: "POST", headers: HEADERS }); fetchAll(); }
   async function handleDraftChange(id, draft) {
     await fetch(`${API}/draft/${id}`, { method: "PUT", headers: HEADERS, body: JSON.stringify({ draft_reply: draft }) });
   }
 
-  // Filter individual emails first, then group into threads
-  const filtered = filter === "all"
-    ? emails
-    : emails.filter(e => e.status === filter || e.analysis?.category === filter);
-
-  const threads = groupByThread(filtered);
+  const filtered = filter === "all" ? emails : emails.filter(e => e.status === filter || e.analysis?.category === filter);
+  const threads  = groupByThread(filtered);
 
   return (
     <>
@@ -697,6 +498,8 @@ export default function App() {
         <button className="run-btn" onClick={triggerRun} disabled={running}>{running ? "Running…" : "⟳ Run Now"}</button>
       </div>
 
+      <HealthStrip health={health} />
+
       <div className="main">
         {stats && (
           <div className="stats-row">
@@ -709,6 +512,17 @@ export default function App() {
 
         {activeTab === "inbox" ? (
           <>
+            {accounts.length > 1 && (
+              <div className="account-row">
+                <span className="account-label">Inbox</span>
+                <button className={`account-btn ${selectedAccount === null ? "active" : ""}`} onClick={() => setSelectedAccount(null)}>All accounts</button>
+                {accounts.map(a => (
+                  <button key={a.email} className={`account-btn ${selectedAccount === a.email ? "active" : ""}`} onClick={() => setSelectedAccount(a.email)}>
+                    <div className="account-dot" />{a.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="filters">
               {["all", "pending", "sent", "rejected", "lead", "client", "support"].map(f => (
                 <button key={f} className={`filter-btn ${filter === f ? "active" : ""}`} onClick={() => setFilter(f)}>{f}</button>
@@ -720,14 +534,7 @@ export default function App() {
               <div className="empty-state"><div className="empty-icon">◎</div><div className="empty-text">No emails here · Click Run Now to fetch</div></div>
             ) : (
               threads.map(({ key, items }) => (
-                <ThreadCard
-                  key={key}
-                  threadKey={key}
-                  items={items}
-                  onApprove={handleApprove}
-                  onReject={handleReject}
-                  onDraftChange={handleDraftChange}
-                />
+                <ThreadCard key={key} threadKey={key} items={items} onApprove={handleApprove} onReject={handleReject} onDraftChange={handleDraftChange} />
               ))
             )}
           </>
