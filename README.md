@@ -20,9 +20,9 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 
 **Watch it triage a live inbox in ~10 seconds:**
 
-https://github.com/ayush-s-tomar/Email-agent/assets/demo/email_agent_full_captioned.mp4
+https://github.com/user-attachments/assets/e327872b-8b59-46e0-8ff2-13e2a40bf935
 
-*(If the video doesn't render inline on GitHub, [download it directly](docs/email_agent_full_captioned.mp4) or try the [live app](https://ayush-email-agent.streamlit.app) yourself.)*
+*(If the video doesn't render inline, [download it directly](docs/email_agent_full_captioned.mp4) or try the [live app](https://ayush-email-agent.streamlit.app) yourself.)*
 
 ---
 
