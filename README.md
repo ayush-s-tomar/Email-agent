@@ -18,11 +18,13 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 
 ![Email Agent dashboard screenshot](docs/screenshot.png)
 
-**Watch it triage a live inbox in ~10 seconds:**
+**See it triage a live inbox:**
 
-https://github.com/user-attachments/assets/e327872b-8b59-46e0-8ff2-13e2a40bf935
+![Email Agent in action](docs/email_agent_demo.gif)
 
-*(If the video doesn't render inline, [download it directly](docs/email_agent_full_captioned.mp4) or try the [live app](https://ayush-email-agent.streamlit.app) yourself.)*
+**Full captioned walkthrough:** [github.com/user-attachments/assets/53d7090d-32b1-4956-84cb-5aa266a7aa19](https://github.com/user-attachments/assets/53d7090d-32b1-4956-84cb-5aa266a7aa19)
+
+*(If the GIF doesn't render inline, [download it directly](docs/email_agent_demo.gif) or try the [live app](https://ayush-email-agent.streamlit.app) yourself.)*
 
 ---
 
@@ -65,7 +67,7 @@ Email-agent/
 ├── requirements.txt            # Root deps for Streamlit Cloud
 └── docs/
     ├── screenshot.png
-    └── email_agent_full_captioned.mp4
+    └── email_agent_demo.gif
 ```
 
 ## ⚡ Quick start (local)
