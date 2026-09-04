@@ -10,25 +10,34 @@
 An AI agent that reads your Gmail inbox, classifies each email, drafts a reply with LLaMA 3.3, and lets you review and approve everything from a live dashboard — no Google Cloud project, no OAuth screen, just a Gmail App Password and a free Groq API key.
 
 **🔗 Live demo:** [ayush-email-agent.streamlit.app](https://ayush-email-agent.streamlit.app)
-**📦 Source:** this repo
+
+**TL;DR**
+- 📬 **No OAuth setup required** — IMAP + a Gmail App Password instead of a Google Cloud project and consent screen, so anyone can replicate it from this README in minutes, not hours.
+- 🔁 **Migrated architectures for a real reason, documented, not hidden** — moved off FastAPI + React + Render after Render's free tier started sleeping monthly and breaking the live demo; now a single-file Streamlit app with zero sleep limit (full reasoning in [Interview talking points](#-interview-talking-points)).
+- 🛠️ **This is the actual tool I use** for my own recruiter and client outreach — not a throwaway demo project.
+- 🧠 **Interview-ready by design** — see [Interview talking points](#-interview-talking-points) for the "why X instead of Y" reasoning behind every major decision.
 
 ---
 
 ## 🎬 Demo
 
-![Email Agent dashboard screenshot](docs/screenshot.png)
-
-**See it triage a live inbox:**
-
 ![Email Agent in action](docs/email_agent_demo.gif)
 
-**Full captioned walkthrough:**
+<details>
+<summary><b>📷 Screenshot + 🎥 full video walkthrough</b></summary>
+<br/>
+
+![Email Agent dashboard screenshot](docs/screenshot.png)
+
+<br/>
 
 [![Watch the full demo](docs/screenshot.png)](https://github.com/user-attachments/assets/53d7090d-32b1-4956-84cb-5aa266a7aa19)
 
 *Click the image above to watch the full captioned video ▶*
 
 *(If the GIF doesn't render inline, [download it directly](docs/email_agent_demo.gif) or try the [live app](https://ayush-email-agent.streamlit.app) yourself.)*
+
+</details>
 
 ---
 
@@ -209,6 +218,6 @@ MIT — see [LICENSE](LICENSE).
 
 **Ayush Singh Tomar**
 GitHub: [@ayush-s-tomar](https://github.com/ayush-s-tomar)
-LinkedIn: [linkedin.com/in/ayush-singh-tomar-4151b0282](https://linkedin.com/in/ayush-singh-tomar-4151b0282)
+LinkedIn: [linkedin.com/in/ayushsinghtomar](https://www.linkedin.com/in/ayushsinghtomar)
 
 Built as part of my AI developer portfolio — this is the exact tool I use for managing recruiter and client outreach.
