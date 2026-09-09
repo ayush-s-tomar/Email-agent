@@ -19,15 +19,21 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 
 ---
 
+## 📚 Contents
+
+[Demo](#-demo) · [What It Does](#-what-it-does) · [Tech Stack](#️-tech-stack) · [Quick Start](#-quick-start-local) · [Deploy Your Own](#️-deploy-your-own-streamlit-community-cloud-free) · [How It Works](#-how-it-works) · [Security](#-security-notes) · [CI/CD](#-cicd) · [Interview Talking Points](#-interview-talking-points) · [Roadmap](#-roadmap)
+
+---
+
 ## 🎬 Demo
 
-![Email Agent in action](docs/email_agent_demo.gif)
+![Email Agent dashboard triaging an inbox with AI-drafted replies](docs/email_agent_demo.gif)
 
 <details>
 <summary><b>📷 Screenshot + 🎥 full video walkthrough</b></summary>
 <br/>
 
-![Email Agent dashboard screenshot](docs/screenshot.png)
+![Email Agent dashboard screenshot showing categorized emails and draft replies](docs/screenshot.png)
 
 <br/>
 
@@ -54,6 +60,8 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 - Composes personalized cold outreach emails on demand
 - Persists everything to SQLite, so nothing is lost on restart
 
+---
+
 ## 🛠️ Tech stack
 
 | Layer | Technology |
@@ -63,6 +71,8 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 | Email | IMAP (read) + SMTP (send) — no Google Cloud needed |
 | Storage | SQLite (WAL mode) |
 | Logging | Rotating log files + in-app cycle health strip |
+
+---
 
 ## 📁 Project structure
 
@@ -82,6 +92,8 @@ Email-agent/
     ├── screenshot.png
     └── email_agent_demo.gif
 ```
+
+---
 
 ## ⚡ Quick start (local)
 
@@ -121,6 +133,8 @@ streamlit run streamlit_app.py
 
 Streamlit opens automatically at `http://localhost:8501`. Click **Run Now**.
 
+---
+
 ## ☁️ Deploy your own (Streamlit Community Cloud, free)
 
 1. Fork this repo
@@ -137,6 +151,8 @@ Streamlit opens automatically at `http://localhost:8501`. Click **Run Now**.
 5. Deploy
 
 No server to keep alive, no monthly sleep limits like Render's free tier — Streamlit Cloud only sleeps after ~7 days of no visitors.
+
+---
 
 ## 🎯 How it works
 
@@ -156,6 +172,8 @@ Gmail inbox (IMAP)
   Gmail SMTP → reply sent
 ```
 
+---
+
 ## 📊 Email categories
 
 | Category | Description |
@@ -167,11 +185,15 @@ Gmail inbox (IMAP)
 | 🚫 Spam | Spam or unwanted email |
 | 📬 Other | Everything else |
 
+---
+
 ## 🔒 Security notes
 
 - `.env` and `.streamlit/secrets.toml` are never committed to Git (see `.gitignore`)
 - The Gmail App Password only grants email access — it cannot log into your full Google account
 - All data stays local/session-scoped — nothing leaves your environment except the email content sent to Groq for analysis
+
+---
 
 ## 🧪 CI/CD
 
@@ -181,6 +203,8 @@ Every push to `main` runs a GitHub Actions workflow (`.github/workflows/ci.yml`)
 - Runs `flake8` for basic linting
 
 See the [Actions tab](https://github.com/ayush-s-tomar/Email-agent/actions) for build status.
+
+---
 
 ## 🧠 Interview talking points
 
@@ -199,6 +223,8 @@ The original build used FastAPI + React + Render, but Render's free tier sleeps 
 **"What is the cold email composer?"**
 A built-in feature where you enter a recipient's name, company, and target role — LLaMA 3.3 generates a personalized ~80-word cold email instantly. It's the tool I use for my own recruiter and client outreach.
 
+---
+
 ## 📌 Roadmap
 
 - [x] Deploy to Streamlit Community Cloud
@@ -209,6 +235,8 @@ A built-in feature where you enter a recipient's name, company, and target role 
 - [x] Cycle health tracking + rotating logs
 - [ ] Slack/WhatsApp notification on high-priority emails
 - [ ] Multi-account support in the Streamlit UI
+
+---
 
 ## 📄 License
 
