@@ -21,7 +21,7 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 
 ## 📚 Contents
 
-[Demo](#-demo) · [What It Does](#-what-it-does) · [Tech Stack](#️-tech-stack) · [Quick Start](#-quick-start-local) · [Deploy Your Own](#️-deploy-your-own-streamlit-community-cloud-free) · [How It Works](#-how-it-works) · [Security](#-security-notes) · [CI/CD](#-cicd) · [Interview Talking Points](#-interview-talking-points) · [Roadmap](#-roadmap)
+[Demo](#-demo) · [What It Does](#-what-it-does) · [Tech Stack](#️-tech-stack) · [Quick Start](#-quick-start-local) · [Deploy Your Own](#️-deploy-your-own-streamlit-community-cloud-free) · [How It Works](#-how-it-works) · [Security](#-security-notes) · [CI/CD](#-cicd) · [Interview Talking Points](#-interview-talking-points) · [Known Limitations](#-known-limitations) · [Roadmap](#-roadmap)
 
 ---
 
@@ -225,6 +225,14 @@ A built-in feature where you enter a recipient's name, company, and target role 
 
 ---
 
+## ⚠️ Known Limitations
+
+- **No background polling** — new emails are only fetched when you open the app and click **Run Now**; there's no scheduler checking Gmail continuously in the background the way a server-side worker would.
+- **No rate limiting on Groq calls** — a high-volume inbox could burn through Groq's free-tier request quota faster than expected, since there's currently no throttling layer between the app and the API.
+- **Single-account, single-user by design** — one Gmail account per deployment, no login/accounts system. "Multi-account support" is on the [Roadmap](#-roadmap) below but isn't built yet.
+
+---
+
 ## 📌 Roadmap
 
 - [x] Deploy to Streamlit Community Cloud
@@ -247,5 +255,6 @@ MIT — see [LICENSE](LICENSE).
 **Ayush Singh Tomar**
 GitHub: [@ayush-s-tomar](https://github.com/ayush-s-tomar)
 LinkedIn: [linkedin.com/in/ayushsinghtomar](https://www.linkedin.com/in/ayushsinghtomar)
+Portfolio: [ayush-s-tomar.vercel.app](https://ayush-s-tomar.vercel.app)
 
 Built as part of my AI developer portfolio — this is the exact tool I use for managing recruiter and client outreach.
