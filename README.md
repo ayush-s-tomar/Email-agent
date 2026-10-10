@@ -1,5 +1,15 @@
 # 📧 AI Email Automation Agent
 
+<!-- TODO 1 (check first): the live demo is a public Streamlit URL. If its secrets hold your real Gmail
+App Password, anyone who opens it can click Run Now to read summaries of your real unread mail and
+Approve & Send replies from your account. Open the demo in a private window and click Run Now. If it
+shows real emails, switch the public demo to a throwaway Gmail with fake emails (or a sample-inbox demo
+mode), or put it behind a password.
+TODO 2: Groq shut down llama-3.3-70b-versatile on 2026-08-16. The badge, What it does, Tech stack, How it
+works and Interview talking points all name it. Confirm backend/agent.py calls openai/gpt-oss-120b (raise
+max_tokens: gpt-oss spends part of it on reasoning), then update the names. Once migrated, add an
+Interview talking point about handling the retirement. -->
+
 [![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=flat-square)](https://ayush-email-agent.streamlit.app)
 [![CI](https://img.shields.io/github/actions/workflow/status/ayush-s-tomar/Email-agent/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ayush-s-tomar/Email-agent/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
@@ -13,7 +23,7 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 
 **TL;DR**
 - 📬 **No OAuth setup required** — IMAP + a Gmail App Password instead of a Google Cloud project and consent screen, so anyone can replicate it from this README in minutes, not hours.
-- 🔁 **Migrated architectures for a real reason, documented, not hidden** — moved off FastAPI + React + Render after Render's free tier started sleeping monthly and breaking the live demo; now a single-file Streamlit app with zero sleep limit (full reasoning in [Interview talking points](#-interview-talking-points)).
+- 🔁 **Migrated architectures for a real reason, documented, not hidden** — moved off FastAPI + React + Render after Render's free tier started sleeping monthly and breaking the live demo; now a single-file Streamlit app that simply wakes on the next visit if it has been idle (full reasoning in [Interview talking points](#-interview-talking-points)).
 - 🛠️ **This is the actual tool I use** for my own recruiter and client outreach — not a throwaway demo project.
 - 🧠 **Interview-ready by design** — see [Interview talking points](#-interview-talking-points) for the "why X instead of Y" reasoning behind every major decision.
 
@@ -58,7 +68,7 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 - Tracks cycle health — total runs, error counts, last successful sync
 - Built-in analytics tab — category, sentiment, and status breakdowns
 - Composes personalized cold outreach emails on demand
-- Persists everything to SQLite, so nothing is lost on restart
+- Persists everything to SQLite, so nothing is lost on restart when running locally (on Streamlit Community Cloud the local filesystem is ephemeral — see [Known Limitations](#️-known-limitations))
 
 ---
 
@@ -66,7 +76,7 @@ An AI agent that reads your Gmail inbox, classifies each email, drafts a reply w
 
 | Layer | Technology |
 |---|---|
-| AI / LLM | Groq API — LLaMA 3.3 70B (free tier) |
+| AI / LLM | Groq API — `llama-3.3-70b-versatile` (free tier) — **shut down by Groq 2026-08-16, migration unconfirmed, see TODO at top** |
 | App | Python, Streamlit |
 | Email | IMAP (read) + SMTP (send) — no Google Cloud needed |
 | Storage | SQLite (WAL mode) |
@@ -150,7 +160,7 @@ Streamlit opens automatically at `http://localhost:8501`. Click **Run Now**.
    ```
 5. Deploy
 
-No server to keep alive, no monthly sleep limits like Render's free tier — Streamlit Cloud only sleeps after ~7 days of no visitors.
+No server to keep alive. Streamlit Community Cloud puts idle apps to sleep after roughly 12 hours without visitors (the threshold has been shortened over time), and the next visit wakes the app up.
 
 ---
 
@@ -218,7 +228,7 @@ Groq has a completely free tier with no credit card required, and their inferenc
 IMAP works with just a Gmail App Password — no Google Cloud project, no OAuth consent screen, no `credentials.json`. Simpler to set up and easier for anyone to replicate from the README.
 
 **"Why Streamlit instead of FastAPI + React?"**
-The original build used FastAPI + React + Render, but Render's free tier sleeps monthly, which broke the live demo. Migrating to a single-file Streamlit app removed the separate backend/frontend split entirely, deploys for free with no sleep limit, and still exposes the same triage/approve/analytics/compose functionality.
+The original build used FastAPI + React + Render, but Render's free tier sleeps monthly, which broke the live demo. Migrating to a single-file Streamlit app removed the separate backend/frontend split entirely, deploys for free (an idle app just wakes on the next visit), and still exposes the same triage/approve/analytics/compose functionality.
 
 **"What is the cold email composer?"**
 A built-in feature where you enter a recipient's name, company, and target role — LLaMA 3.3 generates a personalized ~80-word cold email instantly. It's the tool I use for my own recruiter and client outreach.
@@ -227,6 +237,8 @@ A built-in feature where you enter a recipient's name, company, and target role 
 
 ## ⚠️ Known Limitations
 
+- **The AI step may currently be broken.** The Groq model this app calls (`llama-3.3-70b-versatile`) was shut down on 2026-08-16; the migration is unconfirmed as of this writing — see the TODO at the top of this file.
+- **History doesn't persist on the hosted demo.** Streamlit Community Cloud's filesystem is ephemeral, so a SQLite file written at runtime is wiped when the app reboots or redeploys. SQLite persistence works as described when you run locally; for durable history on a hosted deployment, move storage to an external database.
 - **No background polling** — new emails are only fetched when you open the app and click **Run Now**; there's no scheduler checking Gmail continuously in the background the way a server-side worker would.
 - **No rate limiting on Groq calls** — a high-volume inbox could burn through Groq's free-tier request quota faster than expected, since there's currently no throttling layer between the app and the API.
 - **Single-account, single-user by design** — one Gmail account per deployment, no login/accounts system. "Multi-account support" is on the [Roadmap](#-roadmap) below but isn't built yet.
@@ -235,6 +247,8 @@ A built-in feature where you enter a recipient's name, company, and target role 
 
 ## 📌 Roadmap
 
+- [ ] Migrate the LLM to `openai/gpt-oss-120b` and read the model ID from an environment variable, so the next Groq retirement is a config change
+- [ ] Move storage from local SQLite to an external Postgres (e.g. Supabase) so history survives reboots on the hosted demo
 - [x] Deploy to Streamlit Community Cloud
 - [x] Cold email composer with LLaMA 3.3
 - [x] Persistent storage with SQLite
